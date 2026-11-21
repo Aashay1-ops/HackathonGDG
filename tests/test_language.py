@@ -16,6 +16,7 @@ from sentineldesk.language import (
     LanguageDetector,
     LanguagePrediction,
     LanguageProfile,
+    annotate_dataframe_language,
     detect_language,
     detect_language_batch,
     detect_language_with_confidence,
@@ -208,3 +209,48 @@ class TestMultiLanguageExtensibility:
         assert pred.language == "it"
         assert pred.scores["it"] > pred.scores["en"]
         assert pred.scores["it"] > pred.scores["de"]
+
+    def test_annotate_dataframe_drops_raw_language_and_adds_detected(self) -> None:
+        class DummyDataFrame:
+            """Lightweight DataFrame mock so unit tests don't require pandas."""
+
+            def __init__(self, data: dict[str, list[object]]) -> None:
+                self._data = {k: list(v) for k, v in data.items()}
+
+            @property
+            def columns(self) -> list[str]:
+                return list(self._data.keys())
+
+            def copy(self) -> "DummyDataFrame":
+                return DummyDataFrame(self._data)
+
+            def drop(self, columns: list[str]) -> "DummyDataFrame":
+                return DummyDataFrame(
+                    {k: v for k, v in self._data.items() if k not in columns}
+                )
+
+            def __getitem__(self, key: str) -> list[object]:
+                return self._data[key]
+
+            def __setitem__(self, key: str, value: list[object]) -> None:
+                self._data[key] = list(value)
+
+            def __len__(self) -> int:
+                return len(next(iter(self._data.values()), []))
+
+        raw_df = DummyDataFrame(
+            {
+                "subject": ["Video Issue with Mini-Projector", "Probleme mit dem Smart-Türklingel"],
+                "body": [
+                    "Dear Customer Support Team, I am reaching out to report a persistent problem.",
+                    "Ich beschreibe das Problem mit meinem Smart-Türklingel-Gerät.",
+                ],
+                "language": ["de", "en"],  # Intentionally mislabeled like the raw dataset!
+            }
+        )
+
+        clean_df = annotate_dataframe_language(raw_df, drop_raw_language=True)
+        assert "language" not in clean_df.columns
+        assert clean_df["detected_language"] == ["en", "de"]
+        assert all(0.5 < c <= 1.0 for c in clean_df["language_confidence"])
+

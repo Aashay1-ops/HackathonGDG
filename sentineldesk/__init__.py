@@ -2,7 +2,7 @@
 
 from sentineldesk.language import (
     BUILTIN_PROFILES,
-     DEFAULT_DETECTOR,
+    DEFAULT_DETECTOR,
     DE_PROFILE,
     EN_PROFILE,
     ES_PROFILE,
@@ -10,6 +10,7 @@ from sentineldesk.language import (
     LanguageDetector,
     LanguagePrediction,
     LanguageProfile,
+    annotate_dataframe_language,
     detect_language,
     detect_language_batch,
     detect_language_with_confidence,
@@ -25,6 +26,7 @@ __all__ = [
     "LanguageDetector",
     "LanguagePrediction",
     "LanguageProfile",
+    "annotate_dataframe_language",
     "detect_language",
     "detect_language_batch",
     "detect_language_with_confidence",

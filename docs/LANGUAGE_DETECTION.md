@@ -151,6 +151,16 @@ from sentineldesk import detect_language_batch
 langs = detect_language_batch(df["subject"], df["body"])
 ```
 
+### D. Annotate an entire DataFrame & safely drop the forbidden `language` column
+To guarantee nobody on the team accidentally reads the dataset's mislabeled `language` column, pass your DataFrame to `annotate_dataframe_language(df)`:
+```python
+from sentineldesk import annotate_dataframe_language
+
+# 1. Drops the raw `language` column (drop_raw_language=True by default)
+# 2. Adds `detected_language` ('en' or 'de') and `language_confidence` (0.50 - 1.00)
+df = annotate_dataframe_language(df)
+```
+
 ---
 
 ## 5. Extensibility: How to add more languages in the future
