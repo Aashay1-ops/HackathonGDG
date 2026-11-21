@@ -19,6 +19,7 @@ _Last updated 12:00. Update this table in the same commit as your work: change t
 | ✅ Done | Locked 80/20 split + leakage check | split.py, check_rules.py | | Uses the main CSV only (22,869 KB / 5,718 holdout). Check prints `OK` |
 | ✅ Done | PII masking (bonus) | pii.py | | Self-check: `python pii.py`. Must become step 1 of the pipeline |
 | ✅ Done | Language detection | sentineldesk/language.py | Hung | ~0.02 ms/ticket, zero deps. Removed German IT loanwords (`account`, `system`, `error`, `access`, `update`, `support`, `customer`, `team`) from `EN_PROFILE` and cut unused `fr`/`es` profiles |
+| ✅ Done | Data audit: source choice, missing values, broken rows, reworded copies, label noise | docs/DATA_PREPROCESSING.md | | 11 suggested changes, high priority first |
 | ✅ Done | RAG plan + locked `search()` interface | README.md ([RAG plan](#rag-plan)) | Chirag | **Approved by the team.** Model: multilingual-e5-base, σ ≈ 0.87 to start. Code against `search()` now |
 | 🔨 In progress | Hybrid retrieval (BM25 + dense + RRF) | retrieve.py | Chirag | Building to the approved plan; **not pushed yet**. Tag numbers being gathered for the tags-in-text experiment |
 | ⬜ To do | Triage: critical detector → TF-IDF model → neighbour votes → ensemble + calibration | | | Biggest chunk (~2–2.5h). Fallback at 3:30: drop the ensemble |
@@ -30,7 +31,7 @@ _Last updated 12:00. Update this table in the same commit as your work: change t
 | ⬜ To do | Demo script + rehearsal | | | Last hour |
 | ⬜ Bonus | Cross-lingual matching (comes from the dense embeddings), burst detection | | | Only after the MVP works |
 
-**Blocking decisions** (see [Open decisions](#open-decisions)): the LLM, the UI framework, team roles, what happens after "Escalate", the similarity threshold, and the data source (main CSV only vs main + deduplicated 20k).
+**Blocking decisions** (see [Open decisions](#open-decisions)): the LLM, the UI framework, team roles, what happens after "Escalate", and the similarity threshold.
 
 ## The problem
 
@@ -310,6 +311,7 @@ Retrieval and the classifier share one file. Build it with **exactly** these set
 
 | Topic | Options | Owner | Decision |
 |---|---|---|---|
+| Data source | main CSV only / main + deduplicated 20k | | ✅ main CSV only (`aa_dataset-tickets-multi-lang-5-2-50-version.csv`). The 20k file repeats 8,395 of its tickets with 99.7–99.9% identical labels; the German file is a different domain without `type` / `answer`. See `docs/DATA_PREPROCESSING.md` |
 | LLM for drafting | Gemini (check the hackathon benefits page) / other | | |
 | Embedding model | multilingual-e5 / bge-m3 / TF-IDF | | ✅ `intfloat/multilingual-e5-base` (768 dims, `query: ` prefix on both sides). Probe on the 80% split: e5-base found the original from a translated ticket 60% of the time in the top 5, vs 37% for e5-small. Same-language quality was equal, both separate off-topic queries perfectly, and queries take ~12 ms. bge-m3 was not tested (download kept timing out); optional upgrade if there's time |
 | Classifier | embeddings + logistic regression / TF-IDF / neighbour votes / ensemble / fine-tuned transformer | | ✅ ensemble of (0) embeddings + LogReg, (1) TF-IDF + LogReg and (2) neighbour votes, combined and calibrated by (6); (5) critical detector replaces the keyword overrides. See [Triage in detail](#triage-in-detail-options-0-1-2-5-6) |
