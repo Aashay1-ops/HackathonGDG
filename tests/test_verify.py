@@ -189,3 +189,183 @@ def test_fast_enough_for_the_live_path():
     for _ in range(200):
         verify(d, RETRIEVED, TICKET_EN, "en")
     assert (time.perf_counter() - t) / 200 < 0.01  # under 10 ms per draft
+
+
+# ================================================================ regressions from the cold review of PR #5
+def one(answer, language=None, tid="TKT-00001"):
+    row = {"ticket_id": tid, "answer": answer}
+    if language:
+        row["language"] = language
+    return [row]
+
+
+def check(reply, answer, lang="en", ticket="Please help with my account.", language=None):
+    return verify({"reply": reply, "cited_ids": ["TKT-00001"], "unsupported_asks": []},
+                  one(answer, language), ticket, lang)
+
+
+# 1. units must match: a number with an unknown or different unit can't borrow a bare number from a source
+@pytest.mark.parametrize("reply,answer,lang", [
+    ("Your device comes with a 3 years warranty from us [TKT-00001].", "Wir prüfen das innerhalb von 3 Tagen.", "en"),
+    ("Your request is processed in 10 seconds by our team [TKT-00001].", "A 10% discount applies to renewals.", "en"),
+    ("Your plan is guaranteed for 24 more months from today [TKT-00001].", "Requests are handled within 24 hours.", "en"),
+    ("We answer within 10 business hours on weekdays [TKT-00001].", "We answer within 10 days on weekdays.", "en"),
+    ("Sie erhalten 10 Jahre lang einen Rabatt auf alles [TKT-00001].", "Es gilt ein Rabatt von 10 %.", "de"),
+    ("You will be credited 10 times the monthly fee [TKT-00001].", "A 10% discount applies to renewals.", "en"),
+])
+def test_unit_mismatch_fails(reply, answer, lang):
+    assert "numbers" in failed(check(reply, answer, lang))
+
+
+def test_filler_word_between_number_and_unit_still_matches():
+    r = check("We review your case within 3 business days at most [TKT-00001].", "Wir prüfen das innerhalb von 3 Tagen.")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# 2. number words: compounds read correctly, anything unreadable fails
+@pytest.mark.parametrize("reply,answer,lang", [
+    ("Your refund arrives within fifteen days from today [TKT-00001].", "Refunds take 3 days.", "en"),
+    ("You get a fifty percent discount on the plan [TKT-00001].", "A 10% discount applies.", "en"),
+    ("Sie erhalten zwanzig Euro als Gutschrift von uns [TKT-00001].", "Sie erhalten 10 Euro Gutschrift.", "de"),
+    ("We will credit you a hundred euros for this [TKT-00001].", "We credit 10 euros.", "en"),
+    ("Die Prüfung dauert eine Woche bei uns im Team [TKT-00001].", "Die Prüfung dauert 3 Tage.", "de"),
+    ("Your refund arrives within thirty-three days from today [TKT-00001].", "Wir prüfen das innerhalb von 3 Tagen.", "en"),
+])
+def test_invented_number_words_fail(reply, answer, lang):
+    assert "numbers" in failed(check(reply, answer, lang))
+
+
+@pytest.mark.parametrize("reply,answer,lang", [
+    ("Requests are handled within twenty-four hours by our team [TKT-00001].", "Requests are handled within 24 hours.", "en"),
+    ("Anfragen werden innerhalb von vierundzwanzig Stunden bearbeitet [TKT-00001].", "Requests take 24 hours.", "de"),
+])
+def test_compound_number_words_match(reply, answer, lang):
+    r = check(reply, answer, lang)
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# 3. a separator is read by language: no 1000x amounts
+@pytest.mark.parametrize("reply,answer,lang", [
+    ("The plan costs €2,500 per user per month for you [TKT-00001].", "The plan costs €2.50 per user.", "en"),
+    ("We add a credit of €1,000 to your account today [TKT-00001].", "A credit of €1 is added.", "en"),
+    ("Wir schreiben Ihnen 1.000 € auf Ihrem Konto gut [TKT-00001].", "A credit of €1 is added.", "de"),
+])
+def test_amount_scale_mismatch_fails(reply, answer, lang):
+    assert "numbers" in failed(check(reply, answer, lang))
+
+
+def test_same_amount_in_both_formats_matches():
+    r = check("Wir schreiben Ihnen 1.000 € auf Ihrem Konto gut [TKT-00001].", "A credit of €1,000 is added.", "de",
+              language="en")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# 4. an invented email can't hide behind an existing <email> placeholder
+def test_invented_email_next_to_placeholder_fails():
+    r = check("Please write to <email> or directly to billing@contoso.com for help [TKT-00001].",
+              "Please write to <email> for help.")
+    assert "placeholders" in failed(r)
+
+
+# 5. huge numbers never crash
+@pytest.mark.parametrize("reply", ["€" + "1" * 400 + ",5 credit for you today [TKT-00001].",
+                                   "Reference " + "9" * 4400 + " for you [TKT-00001]."])
+def test_huge_numbers_fail_without_crashing(reply):
+    r = check(reply, "A credit of €1 is added.")
+    assert not r["passed"]
+
+
+# 6. a German greeting can't carry an English reply past the language check
+def test_mixed_language_reply_fails():
+    r = check("Sehr geehrte/r <name>, vielen Dank für Ihre Nachricht. Please restart the VPN client and clear the "
+              "cache, then try again [TKT-00001].", "Sehr geehrte/r <name>, bitte VPN neu starten.", "de")
+    assert "language" in failed(r)
+
+
+# 7. figures quoted verbatim from a source are not flagged as invented phone numbers
+@pytest.mark.parametrize("reply,answer,lang", [
+    ("Das Limit für Ihr Konto liegt bei 1.000.000 EUR pro Jahr [TKT-00001].",
+     "Das Limit für Ihr Konto liegt bei 1.000.000 EUR pro Jahr.", "de"),
+    ("Die Wartung beginnt am 21.11.2026 08:00 und dauert kurz [TKT-00001].",
+     "Die Wartung beginnt am 21.11.2026 08:00.", "de"),
+])
+def test_grounded_figures_are_not_pii(reply, answer, lang):
+    r = check(reply, answer, lang)
+    assert "placeholders" not in failed(r), r["failures"]
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# 8. odd inputs never crash; rows without a ticket_id can't be cited
+def test_bad_retrieved_rows_and_ticket_types_do_not_crash():
+    rows = [None, "x", {"answer": "no id here"}, {"ticket_id": "TKT-00001", "answer": "Restart the VPN client."}]
+    r = verify({"reply": "Please restart the VPN client now [TKT-00001].", "cited_ids": ["TKT-00001"],
+                "unsupported_asks": []}, rows, 12345, "en")
+    assert r["passed"], r["failures"]
+
+
+def test_row_without_ticket_id_cannot_be_cited():
+    r = verify({"reply": "Please restart the VPN client now.", "cited_ids": ["None"], "unsupported_asks": []},
+               [{"answer": "Restart the VPN client."}], "ticket", "en")
+    assert "citations" in failed(r)
+
+
+def test_uppercase_lang_is_accepted():
+    r = check("Please restart the VPN client and clear the cache today [TKT-00001].", "Restart the VPN client.", "EN")
+    assert "language" not in failed(r), r["failures"]
+
+
+# 9. the same date in another format matches
+def test_date_formats_match_across_languages():
+    r = check("Die Wartung findet am 21.11.2026 um 10:30 statt, danach geht es weiter [TKT-00001].",
+              "Maintenance is on 2026-11-21 at 10:30.", "de", language="en")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# 10. a huge one-word reply fails fast
+def test_huge_single_token_reply_is_fast():
+    t = time.perf_counter()
+    r = check("1-" * 20000 + " [TKT-00001]", "Restart the VPN client.")
+    assert "format" in failed(r)
+    assert time.perf_counter() - t < 1.0
+
+
+# 11. uppercase placeholders, invented links and spelled-out emails are caught; quoted links are fine
+@pytest.mark.parametrize("reply", [
+    "Please contact <Manager> about the VPN client issue [TKT-00001].",
+    "Please download the fix from https://contoso-fix.example/vpn today [TKT-00001].",
+    "Please write to help (at) contoso (dot) com about this [TKT-00001].",
+])
+def test_invented_placeholders_links_emails_fail(reply):
+    assert "placeholders" in failed(check(reply, "Restart the VPN client."))
+
+
+def test_link_quoted_from_source_passes():
+    r = check("The guide is at https://docs.example.com/vpn for you [TKT-00001].",
+              "See the guide at https://docs.example.com/vpn for steps.")
+    assert "placeholders" not in failed(r), r["failures"]
+
+
+# 12. the customer's own amount is not enough to promise it; plain numbers from the ticket still are
+def test_amount_from_ticket_alone_cannot_be_promised():
+    r = check("We will refund the €500 to your account shortly [TKT-00001].", "We review refund requests.",
+              ticket="I was charged €500 twice, please refund.")
+    assert "numbers" in failed(r)
+
+
+# second pass, from re-running the reviewer's probes
+@pytest.mark.parametrize("reply", ["A credit of €1.000 has been issued to your account today [TKT-00001].",
+                                   "A credit of 1 000 € has been issued to your account today [TKT-00001]."])
+def test_three_decimal_amounts_are_thousands(reply):
+    assert "numbers" in failed(check(reply, "A credit of €1 is added."))
+
+
+def test_space_separated_thousands_match():
+    r = check("A credit of 1 000 € has been issued to your account today [TKT-00001].",
+              "A credit of €1,000 is added.")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+def test_leak_evidence_shows_the_whole_address():
+    r = check("Please write to <email> or directly to billing@contoso.com for help [TKT-00001].",
+              "Please write to <email> for help.")
+    assert "billing@contoso.com" in next(f["detail"] for f in r["failures"] if f["check"] == "placeholders")

@@ -25,7 +25,7 @@ _Last updated 12:00. Update this table in the same commit as your work: change t
 | ✅ Done | Triage: critical detector → TF-IDF model → neighbour votes → ensemble + calibration | sentineldesk/triage/, scripts/*_triage.py | SPGOHIL09 | `Triage.load("artifacts").predict(subject, body)`; see sentineldesk/triage/README.md. Trains on Colab via notebooks/triage_colab.ipynb (~10 min on T4), which also builds the shared `data/index/` (e5-base). Falls back to model 0 + critical detector if ensemble files are missing |
 | ⬜ To do | Escalation gate (rules + reason strings) | | | Needs triage + retrieval outputs |
 | ⬜ To do | Draft (Gemini, JSON output) | | **unassigned** | Blocked on choosing the LLM. Can start now with mocked retrieval results. Must return the JSON that [`verify()`](#-interface-verify) expects |
-| ✅ Done | Verify step (⑤) | sentineldesk/verify.py, tests/test_verify.py | Aashay | 6 rule checks, ~1 ms, no new dependencies, 29 tests. Interface below |
+| ✅ Done | Verify step (⑤) | sentineldesk/verify.py, tests/test_verify.py | Aashay | 6 rule checks, ~1 ms, no new dependencies, 68 tests (incl. a cold-review pass). Interface below |
 | ⬜ To do | Live console UI | | **unassigned** | Blocked on choosing the UI framework. Can start now with mocked outputs |
 | 🔨 Ready, not run | Eval script: Macro-F1 + high-priority Incident recall, "ML only" vs "ML + rules", latency | scripts/eval_triage.py | SPGOHIL09 | Triage part written and tested on a sample. Run on the holdout **once**, at the end |
 | ✅ Done | requirements.txt | requirements.txt | SPGOHIL09 | scikit-learn pinned to 1.7.2 (models are pickled on Colab, loaded on the laptop) |
@@ -134,10 +134,11 @@ We use classical ML where results must be measurable, rules where we can't affor
         │                        • cited_ids ⊆ retrieved ticket_ids (at least one)
         │                        • every number / € / $ / % / SLA term ("within X days")
         │                          in the reply must also appear in a retrieved answer
-        │                          or in the customer's own ticket
+        │                          (plain numbers like versions may also come from the ticket)
         │                        • keep placeholders like <name>, <acc_num> as they are;
-        │                          no invented email / phone / account numbers
-        │                        • reply language = ticket language; unsupported_asks empty
+        │                          no invented email / phone / account numbers / links
+        │                        • reply (and every sentence) in the ticket's language;
+        │                          unsupported_asks empty
         │                        • check fails → escalate instead of showing the draft
         ▼                                         ▼
   🔴 Escalate to On-Call (reason)        🟢 Auto-Draft Ready
@@ -304,11 +305,11 @@ verify(draft, retrieved, ticket_text, lang)
 
 | Check | Fails when | Code |
 |---|---|---|
-| `format` | `reply` empty or over 250 words, or a list field isn't a list (never crashes on bad JSON) | `VERIFY_FAILED` |
+| `format` | `reply` empty, over 250 words or over 3,000 characters, or a list field isn't a list (never crashes on bad input) | `VERIFY_FAILED` |
 | `citations` | A cited ID (in `cited_ids` or written `TKT-xxxxx` in the reply) wasn't retrieved, or nothing is cited | `VERIFY_FAILED` |
-| `numbers` | A number, amount (€/$/EUR/USD), %, duration ("within 3 days", "innerhalb von 3 Tagen"), date or time in the reply isn't in a retrieved answer or the ticket. German and English number formats are matched (`1.000,50 €` = `1000.50 EUR`); currencies and units must match | `VERIFY_FAILED` |
-| `placeholders` | The reply uses a `<placeholder>` no source has, or contains an email/phone/account number that `pii.mask()` would catch | `VERIFY_FAILED` |
-| `language` | Reply language ≠ ticket language (only enforced from 8 words up) | `VERIFY_FAILED` |
+| `numbers` | An amount (€/$/EUR/USD/CHF), %, or quantity with a unit (days, hours, years, GB, users, times…; en + de) isn't in a **retrieved answer** with the same unit; or a plain number, date or time isn't in a retrieved answer or the ticket. Number words count ("twenty-four hours", "vierundzwanzig Stunden"); one it can't read fails. Separators are read by language (`2,500` in English is 2500), amounts never have 3 decimals (`€1.000` = 1000), and dates match across formats (`21.11.2026` = `2026-11-21`) | `VERIFY_FAILED` |
+| `placeholders` | The reply uses a `<placeholder>` no source has (any case), or contains an email, phone or account number `pii.mask()` would catch, a link, or a spelled-out email ("help (at) x (dot) com") that isn't quoted from a source | `VERIFY_FAILED` |
+| `language` | The reply, or any full sentence in it (6+ words), isn't in the ticket's language. Replies under 8 words aren't judged | `VERIFY_FAILED` |
 | `unsupported_asks` | The LLM listed anything it couldn't ground | `UNSUPPORTED_ASK` |
 
 Run the tests: `python -m pytest tests/test_verify.py -q`.
@@ -353,6 +354,6 @@ Run the tests: `python -m pytest tests/test_verify.py -q`.
 | Vector store | FAISS / Chroma / numpy | | |
 | UI | Streamlit / Gradio / other | | |
 | What happens after "Escalate" | | | |
-| What the AI draft must contain | | Aashay | ✅ JSON `{reply, cited_ids, unsupported_asks}`, checked by [`verify()`](#-interface-verify). Verify allows numbers from the customer's own ticket as well as retrieved answers (so "PHP 8.0" or an order number isn't blocked), requires at least one citation, fails (never repairs) on an unretrieved citation, and also checks reply language and `unsupported_asks` |
+| What the AI draft must contain | | Aashay | ✅ JSON `{reply, cited_ids, unsupported_asks}`, checked by [`verify()`](#-interface-verify). Amounts, percentages and durations must come from a retrieved answer; plain numbers, dates and times may also come from the customer's own ticket (so "PHP 8.0" or an order number isn't blocked, but "I was charged €500" doesn't let the reply promise €500). Verify requires at least one citation, fails (never repairs) on an unretrieved citation, and also checks reply language and `unsupported_asks` |
 | Confidence and similarity thresholds | | | Critical threshold: catch ≥ 90% of high-priority Incidents, tuned on half B. Confidence threshold: tuned on half B. Similarity threshold: start at σ ≈ 0.87 for e5-base (in-domain top-1 median 0.954, highest off-topic probe 0.854); finalize on the full index, on the 80% split |
 | Team roles (5 people) | | | |
