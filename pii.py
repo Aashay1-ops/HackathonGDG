@@ -43,7 +43,35 @@ def mask(text):
     return _PHONE.sub(_phone, text)
 
 
+# Data audit #8: 12.4% of answers use [Name] / {tel_num} / [Telefonnummer] instead of <name> / <tel_num>.
+# Run on retrieved answers before the drafting LLM, so the verify step only has to allow <...> placeholders.
+_BRACKET = re.compile(r"[\[{]\s*([A-Za-zÄÖÜäöüß _-]{2,30}?)\s*[\]}]")
+_CANON = {
+    "<name>": {"name", "yourname", "ihrname", "deinname", "customername", "customer", "kundenname"},
+    "<tel_num>": {"telnum", "telnumber", "telnummer", "telefonnummer", "phonenumber", "phone"},
+    "<acc_num>": {"accnum", "accountnumber", "accountnummer", "kontonummer", "kontonr", "kundennummer", "accountno"},
+    "<email>": {"email", "emailaddress", "emailadresse"},
+}
+_LOOKUP = {k: tag for tag, keys in _CANON.items() for k in keys}
+
+
+def normalize_placeholders(text):
+    """[Name], {tel_num}, [Telefonnummer], ... -> <name>, <tel_num>, <acc_num>. Unknown brackets are kept."""
+    def sub(m):
+        return _LOOKUP.get(re.sub(r"[\s_-]", "", m.group(1)).lower(), m.group(0))
+    return _BRACKET.sub(sub, text or "")
+
+
 if __name__ == "__main__":
+    for src, want in {
+        "Dear [Name], call [Tel-Nummer] or {tel_num}.": "Dear <name>, call <tel_num> or <tel_num>.",
+        "Sehr geehrte/r [Ihr Name], Konto [Kontonummer]": "Sehr geehrte/r <name>, Konto <acc_num>",
+        "See [Phone Number] and [Acc_Num]": "See <tel_num> and <acc_num>",
+        "Step [1] of the guide [Settings > Users]": "Step [1] of the guide [Settings > Users]",
+        "Already <name> and <tel_num>": "Already <name> and <tel_num>",
+    }.items():
+        assert normalize_placeholders(src) == want, f"{src!r} -> {normalize_placeholders(src)!r}"
+
     must_mask = {
         "mail anna.schmidt@klinik-berlin.de please": "mail <email> please",
         "call +49 30 1234567 now": "call <tel_num> now",
