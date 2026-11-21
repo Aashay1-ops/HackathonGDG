@@ -24,7 +24,8 @@ _Last updated 12:00. Update this table in the same commit as your work: change t
 | 🔨 In progress | Hybrid retrieval (BM25 + dense + RRF) | retrieve.py | Chirag | Building to the approved plan; **not pushed yet**. Tag numbers being gathered for the tags-in-text experiment |
 | ✅ Done | Triage: critical detector → TF-IDF model → neighbour votes → ensemble + calibration | sentineldesk/triage/, scripts/*_triage.py | SPGOHIL09 | `Triage.load("artifacts").predict(subject, body)`; see sentineldesk/triage/README.md. Trains on Colab via notebooks/triage_colab.ipynb (~10 min on T4), which also builds the shared `data/index/` (e5-base). Falls back to model 0 + critical detector if ensemble files are missing |
 | ⬜ To do | Escalation gate (rules + reason strings) | | | Needs triage + retrieval outputs |
-| ⬜ To do | Draft (Gemini, JSON output) + verify step | | **unassigned** | Blocked on choosing the LLM. Can start now with mocked retrieval results |
+| ⬜ To do | Draft (Gemini, JSON output) | | **unassigned** | Blocked on choosing the LLM. Can start now with mocked retrieval results. Must return the JSON that [`verify()`](#-interface-verify) expects |
+| ✅ Done | Verify step (⑤) | sentineldesk/verify.py, tests/test_verify.py | Aashay | 6 rule checks, ~1 ms, no new dependencies, 29 tests. Interface below |
 | ⬜ To do | Live console UI | | **unassigned** | Blocked on choosing the UI framework. Can start now with mocked outputs |
 | 🔨 Ready, not run | Eval script: Macro-F1 + high-priority Incident recall, "ML only" vs "ML + rules", latency | scripts/eval_triage.py | SPGOHIL09 | Triage part written and tested on a sample. Run on the holdout **once**, at the end |
 | ✅ Done | requirements.txt | requirements.txt | SPGOHIL09 | scikit-learn pinned to 1.7.2 (models are pickled on Colab, loaded on the laptop) |
@@ -130,10 +131,13 @@ We use classical ML where results must be measurable, rules where we can't affor
         │                        returns JSON {reply, cited_ids, unsupported_asks}
         │                                         ▼
         │                     ⑤ VERIFY (rules)
-        │                        • cited_ids ⊆ retrieved ticket_ids
+        │                        • cited_ids ⊆ retrieved ticket_ids (at least one)
         │                        • every number / € / $ / % / SLA term ("within X days")
         │                          in the reply must also appear in a retrieved answer
-        │                        • keep placeholders like <name>, <acc_num> as they are
+        │                          or in the customer's own ticket
+        │                        • keep placeholders like <name>, <acc_num> as they are;
+        │                          no invented email / phone / account numbers
+        │                        • reply language = ticket language; unsupported_asks empty
         │                        • check fails → escalate instead of showing the draft
         ▼                                         ▼
   🔴 Escalate to On-Call (reason)        🟢 Auto-Draft Ready
@@ -279,6 +283,36 @@ Retrieval and the classifier share one file. Build it with **exactly** these set
   - `kb.pkl`: same row order, with `ticket_id, text, subject, answer, language, type, queue, priority, tag_1..tag_8`, plus `searchable` (False for empty, placeholder-only or under-40-character answers)
 - **Run `python check_rules.py` after building.** It verifies the index holds only 80%-split tickets.
 
+### 🔒 Interface: `verify()`
+
+The rule check that runs on every LLM draft. A draft is shown only if `passed` is `True`; otherwise the ticket escalates with the listed reasons.
+
+```python
+from sentineldesk.verify import verify
+verify(draft, retrieved, ticket_text, lang)
+  -> {"passed": bool,
+      "failures": [{"check", "code", "detail"}, ...],    # every failed check, for the escalation reasons
+      "checks":   [{"check", "passed", "evidence"}, ...]}  # all six, for the YES/NO list in the UI
+```
+
+| Input | Meaning |
+|---|---|
+| `draft` | The LLM's JSON: `{"reply": str, "cited_ids": [str], "unsupported_asks": [str]}` |
+| `retrieved` | The `search()` results the LLM was given |
+| `ticket_text` | The customer's ticket, PII-masked |
+| `lang` | `en`/`de` from `sentineldesk/language.py` |
+
+| Check | Fails when | Code |
+|---|---|---|
+| `format` | `reply` empty or over 250 words, or a list field isn't a list (never crashes on bad JSON) | `VERIFY_FAILED` |
+| `citations` | A cited ID (in `cited_ids` or written `TKT-xxxxx` in the reply) wasn't retrieved, or nothing is cited | `VERIFY_FAILED` |
+| `numbers` | A number, amount (€/$/EUR/USD), %, duration ("within 3 days", "innerhalb von 3 Tagen"), date or time in the reply isn't in a retrieved answer or the ticket. German and English number formats are matched (`1.000,50 €` = `1000.50 EUR`); currencies and units must match | `VERIFY_FAILED` |
+| `placeholders` | The reply uses a `<placeholder>` no source has, or contains an email/phone/account number that `pii.mask()` would catch | `VERIFY_FAILED` |
+| `language` | Reply language ≠ ticket language (only enforced from 8 words up) | `VERIFY_FAILED` |
+| `unsupported_asks` | The LLM listed anything it couldn't ground | `UNSUPPORTED_ASK` |
+
+Run the tests: `python -m pytest tests/test_verify.py -q`.
+
 ## Required deliverables (from the problem statement)
 
 - [ ] **Triage:** predict type, queue and priority, each with a confidence score
@@ -319,6 +353,6 @@ Retrieval and the classifier share one file. Build it with **exactly** these set
 | Vector store | FAISS / Chroma / numpy | | |
 | UI | Streamlit / Gradio / other | | |
 | What happens after "Escalate" | | | |
-| What the AI draft must contain | | | |
+| What the AI draft must contain | | Aashay | ✅ JSON `{reply, cited_ids, unsupported_asks}`, checked by [`verify()`](#-interface-verify). Verify allows numbers from the customer's own ticket as well as retrieved answers (so "PHP 8.0" or an order number isn't blocked), requires at least one citation, fails (never repairs) on an unretrieved citation, and also checks reply language and `unsupported_asks` |
 | Confidence and similarity thresholds | | | Critical threshold: catch ≥ 90% of high-priority Incidents, tuned on half B. Confidence threshold: tuned on half B. Similarity threshold: start at σ ≈ 0.87 for e5-base (in-domain top-1 median 0.954, highest off-topic probe 0.854); finalize on the full index, on the 80% split |
 | Team roles (5 people) | | | |
