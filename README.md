@@ -59,6 +59,54 @@ Steps ①–③ are decided. Everything else is still open (see [Open decisions]
       (details TBD)            (details TBD)
 ```
 
+## Architecture (hybrid)
+
+We use classical ML where results must be measurable, rules where we can't afford to miss something, and the LLM only to write the reply. The LLM's output is then checked before anyone sees it.
+
+```
+ Ticket (subject?, body)
+        │
+        ▼
+ ① TRIAGE
+   ├─ ML: multilingual embeddings → LogReg ×3 (type / queue / priority)
+   │      + CalibratedClassifierCV → calibrated confidence
+   └─ Rules: outage keywords in en+de ("down", "ausgefallen", "kein Zugriff", ...)
+          → force priority=high, type=Incident   (protects high-priority Incident recall)
+        │
+        ▼
+ ② RETRIEVAL (hybrid search)
+   ├─ BM25 (exact terms: product names, error codes)
+   ├─ Dense multilingual embeddings (meaning; German ↔ English)
+   └─ Reciprocal Rank Fusion → top 3–5
+        │
+        ▼
+ ③ GATE (deterministic rules, each with a reason string)
+   high-priority Incident │ low confidence │ low similarity │ unsupported ask
+        │                                         │
+     escalate                                   safe
+        │                                         ▼
+        │                     ④ DRAFT: LLM, given only the retrieved answers
+        │                        returns JSON {reply, cited_ids, unsupported_asks}
+        │                                         ▼
+        │                     ⑤ VERIFY (rules)
+        │                        • cited_ids ⊆ retrieved ticket_ids
+        │                        • every number / € / $ / % / SLA term ("within X days")
+        │                          in the reply must also appear in a retrieved answer
+        │                        • keep placeholders like <name>, <acc_num> as they are
+        │                        • check fails → escalate instead of showing the draft
+        ▼                                         ▼
+  🔴 Escalate to On-Call (reason)        🟢 Auto-Draft Ready
+```
+
+### Design rules
+
+- **The LLM does not do triage.** LLM confidence scores aren't calibrated, and LLM calls would make the holdout evaluation (about 5.7k tickets) slow, rate-limited and non-deterministic.
+- **The UI shows the dense cosine similarity** and the "no precedent" threshold uses it. The RRF score is only used to order results, because it is not a similarity.
+- **Fit everything on the 80% split only:** BM25 IDF statistics, the embedding index, the classifiers and calibration.
+- **Build the outage keyword list from the 80% split** (its `Outage`/`Disruption` tags) and from common sense. Never tune it by looking at holdout errors.
+- **Report two sets of metrics:** "ML only" and "ML + rules" (Macro-F1 and high-priority Incident recall). The rules raise recall and may cost some precision, and we show that trade-off on purpose.
+- **Mask PII before any external LLM call** (bonus): emails, phone numbers, IPs and account numbers.
+
 ## Required deliverables (from the problem statement)
 
 - [ ] **Triage:** predict type, queue and priority, each with a confidence score
@@ -90,7 +138,8 @@ Steps ①–③ are decided. Everything else is still open (see [Open decisions]
 |---|---|---|---|
 | LLM for drafting | Gemini (check the hackathon benefits page) / other | | |
 | Embedding model | multilingual-e5 / bge-m3 / TF-IDF | | |
-| Classifier | embeddings + logistic regression / fine-tuned transformer | | |
+| Classifier | embeddings + logistic regression / fine-tuned transformer | | ✅ embeddings + LogReg + calibration, plus outage rules |
+| Retrieval | dense only / hybrid | | ✅ hybrid: BM25 + dense, fused with RRF |
 | Vector store | FAISS / Chroma / numpy | | |
 | UI | Streamlit / Gradio / other | | |
 | What happens after "Escalate" | | | |
