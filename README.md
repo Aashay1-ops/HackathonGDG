@@ -8,6 +8,29 @@ SentinelDesk takes an incoming support ticket (English or German) and:
 2. finds similar tickets we resolved in the past,
 3. decides whether the AI may answer or a human must take it.
 
+## Status board
+
+_Last updated 12:00. Update this table in the same commit as your work: change the status, add your name. Run `python check_rules.py` before every push._
+
+| Status | Piece | File | Owner | Notes |
+|---|---|---|---|---|
+| ✅ Done | Plan, architecture, RAG plan, leakage rules | README.md | | |
+| ✅ Done | Fair-play and scope rules (loaded by everyone's Claude) | CLAUDE.md | | |
+| ✅ Done | Locked 80/20 split + leakage check | split.py, check_rules.py | | Uses the main CSV only (22,869 KB / 5,718 holdout). Check prints `OK` |
+| ✅ Done | PII masking (bonus) | pii.py | | Self-check: `python pii.py`. Must become step 1 of the pipeline |
+| 🟡 Needs fix | Language detection | sentineldesk/language.py | Hung | **Bug:** "Mein Account ist gesperrt, das System zeigt Error 500" → `en`. Remove words German tickets also use (`account`, `system`, `error`, `access`, `update`, `support`, `customer`, `team`) from `EN_PROFILE`. Also cut the unused fr/es profiles |
+| 🔨 In progress | Hybrid retrieval (BM25 + dense + RRF) | retrieve.py | | Works locally, **not pushed yet**. Embedding model being chosen |
+| ⬜ To do | Triage: critical detector → TF-IDF model → neighbour votes → ensemble + calibration | | | Biggest chunk (~2–2.5h). Fallback at 3:30: drop the ensemble |
+| ⬜ To do | Escalation gate (rules + reason strings) | | | Needs triage + retrieval outputs |
+| ⬜ To do | Draft (Gemini, JSON output) + verify step | | **unassigned** | Blocked on choosing the LLM. Can start now with mocked retrieval results |
+| ⬜ To do | Live console UI | | **unassigned** | Blocked on choosing the UI framework. Can start now with mocked outputs |
+| ⬜ To do | Eval script: Macro-F1 + high-priority Incident recall, "ML only" vs "ML + rules", latency | | | Run on the holdout **once**, at the end |
+| ⬜ To do | requirements.txt | | | |
+| ⬜ To do | Demo script + rehearsal | | | Last hour |
+| ⬜ Bonus | Cross-lingual matching (comes from the dense embeddings), burst detection | | | Only after the MVP works |
+
+**Blocking decisions** (see [Open decisions](#open-decisions)): the LLM, the UI framework, the embedding model, team roles, what happens after "Escalate", the similarity threshold, and the data source (main CSV only vs main + deduplicated 20k).
+
 ## The problem
 
 Helpdesks lose time in two ways:
