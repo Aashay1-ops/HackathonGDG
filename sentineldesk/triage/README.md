@@ -24,13 +24,13 @@ Each call returns:
 
 Keyword hits **never** change the labels. They are only inputs to the critical detector.
 
-**For retrieval:** `scripts/embed.py` saves normalized embeddings at `artifacts/embeddings/<model>/{train,half_a,half_b}.npy`, with `<part>_ids.json` giving the ticket order. The kb parquet files in `artifacts/splits/` still include `answer`. The holdout `answer` is dropped in `split.py` and never written to disk.
+**For retrieval:** a full `scripts/embed.py` run with the team model (e5-base) writes the shared index from the README spec: `data/index/emb.npy` (22,869 × 768, normalized float32, in `load_split()` order), `kb.pkl` (same order, with `searchable`) and `meta.json` (model + `"query: "` prefix). Triage's own `train`/`half_a`/`half_b` arrays are slices of the same matrix, and live tickets are embedded from the same text as split.py's `text` column, so triage and retrieval can share one embedding per query. The holdout is embedded separately and never enters the index.
 
 ## Train
 
 ```bash
 python scripts/build_split.py          # split.load_split (team split); downloads data/tickets.csv if missing
-python scripts/embed.py                # default intfloat/multilingual-e5-small
+python scripts/embed.py                # team model e5-base; also writes the shared data/index/ (emb.npy, kb.pkl)
 python scripts/train_triage.py         # add --fallback-only for model 0 + critical only
 pytest -q tests/test_triage.py
 python scripts/eval_triage.py          # holdout: ONCE, at the very end

@@ -94,10 +94,10 @@ def load_triage(root, emb):
 
 
 # ---------- text ---------------------------------------------------------------------------------
-@pytest.mark.parametrize("subject", [None, float("nan"), "", "   "])
+@pytest.mark.parametrize("subject", [None, float("nan"), ""])
 def test_build_text_missing_subject(subject):
     out = build_text(subject, "VPN is down")
-    assert out == "VPN is down" and "nan" not in out
+    assert out == "\nVPN is down" and "nan" not in out
 
 
 def test_build_text_raises_on_empty():
@@ -107,8 +107,21 @@ def test_build_text_raises_on_empty():
         build_text("", "  ")
 
 
-def test_build_text_nfkc():
-    assert build_text("ﬁle", "Ａ") == "file\nA"
+def test_build_text_matches_team_split_text(csv_path):
+    """The shared index is built from split.py's `text`; triage must embed the identical string."""
+    from split import load_split
+
+    kb, _ = load_split(str(csv_path))
+    assert build_texts(kb["subject"], kb["body"]) == kb["text"].tolist()
+
+
+def test_searchable_flag():
+    from sentineldesk.triage.data import is_searchable
+
+    assert not is_searchable(None) and not is_searchable(float("nan")) and not is_searchable("")
+    assert not is_searchable("Thanks, we fixed it.")                       # under 40 chars
+    assert not is_searchable("<name> <acc_num> <tel_num> <email> <name> <name>")  # placeholders only
+    assert is_searchable("Dear <name>, please restart the VPN client and clear the cache, then retry.")
 
 
 # ---------- split / leakage ---------------------------------------------------------------------

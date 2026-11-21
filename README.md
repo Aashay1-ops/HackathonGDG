@@ -20,12 +20,12 @@ _Last updated 12:00. Update this table in the same commit as your work: change t
 | ✅ Done | PII masking (bonus) | pii.py | | Self-check: `python pii.py`. Must become step 1 of the pipeline |
 | ✅ Done | Language detection | sentineldesk/language.py | Hung | ~0.02 ms/ticket, zero deps. Removed German IT loanwords (`account`, `system`, `error`, `access`, `update`, `support`, `customer`, `team`) from `EN_PROFILE` and cut unused `fr`/`es` profiles |
 | 🔨 In progress | Hybrid retrieval (BM25 + dense + RRF) | retrieve.py | | Draft works locally, **not pushed yet**. Embedding model chosen: multilingual-e5-base |
-| ⬜ To do | Triage: critical detector → TF-IDF model → neighbour votes → ensemble + calibration | | | Biggest chunk (~2–2.5h). Fallback at 3:30: drop the ensemble |
+| ✅ Done | Triage: critical detector → TF-IDF model → neighbour votes → ensemble + calibration | sentineldesk/triage/, scripts/*_triage.py | SPGOHIL09 | `Triage.load("artifacts").predict(subject, body)`; see sentineldesk/triage/README.md. Trains on Colab via notebooks/triage_colab.ipynb (~10 min on T4), which also builds the shared `data/index/` (e5-base). Falls back to model 0 + critical detector if ensemble files are missing |
 | ⬜ To do | Escalation gate (rules + reason strings) | | | Needs triage + retrieval outputs |
 | ⬜ To do | Draft (Gemini, JSON output) + verify step | | **unassigned** | Blocked on choosing the LLM. Can start now with mocked retrieval results |
 | ⬜ To do | Live console UI | | **unassigned** | Blocked on choosing the UI framework. Can start now with mocked outputs |
-| ⬜ To do | Eval script: Macro-F1 + high-priority Incident recall, "ML only" vs "ML + rules", latency | | | Run on the holdout **once**, at the end |
-| ⬜ To do | requirements.txt | | | |
+| 🔨 Ready, not run | Eval script: Macro-F1 + high-priority Incident recall, "ML only" vs "ML + rules", latency | scripts/eval_triage.py | SPGOHIL09 | Triage part written and tested on a sample. Run on the holdout **once**, at the end |
+| ✅ Done | requirements.txt | requirements.txt | SPGOHIL09 | scikit-learn pinned to 1.7.2 (models are pickled on Colab, loaded on the laptop) |
 | ⬜ To do | Demo script + rehearsal | | | Last hour |
 | ⬜ Bonus | Cross-lingual matching (comes from the dense embeddings), burst detection | | | Only after the MVP works |
 

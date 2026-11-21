@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -68,6 +70,27 @@ def sanity_check(kb: pd.DataFrame, test: pd.DataFrame) -> None:
     n_type, n_prio = kb["type"].nunique(), kb["priority"].nunique()
     if n_type != 4 or n_prio != 3:
         raise ValueError(f"Expected 4 types and 3 priorities, got {n_type} and {n_prio}. Wrong dataset file?")
+
+
+KB_INDEX_COLS = ["ticket_id", "text", "subject", "answer", "language", "type", "queue", "priority"] + [
+    f"tag_{i}" for i in range(1, 9)
+]
+_PLACEHOLDER = re.compile(r"<[^<>\s]{1,40}>")
+
+
+def is_searchable(answer) -> bool:
+    """README rule: False for empty, placeholder-only or under-40-character answers."""
+    if answer is None or (isinstance(answer, float) and math.isnan(answer)):
+        return False
+    a = str(answer).strip()
+    return len(a) >= 40 and bool(re.search(r"[^\W\d_]", _PLACEHOLDER.sub("", a)))
+
+
+def kb_index_frame(kb: pd.DataFrame) -> pd.DataFrame:
+    """Rows for data/index/kb.pkl, in load_split() order, plus the `searchable` flag."""
+    out = kb[[c for c in KB_INDEX_COLS if c in kb.columns]].reset_index(drop=True).copy()
+    out["searchable"] = out["answer"].map(is_searchable)
+    return out
 
 
 def calib_split(kb: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:

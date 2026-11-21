@@ -14,6 +14,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.metrics import f1_score
 
 from sentineldesk.triage import TASKS
 from sentineldesk.triage.calibration import apply_temperature, ece, fit_temperature, nll, suggest_conf_threshold
@@ -57,6 +58,7 @@ def _calib_report(probs: np.ndarray, y: np.ndarray, T: float, bins: int, min_bin
         "nll_before": nll(probs, y), "nll_after": nll(cal, y),
         "ece_before": ece(probs, y, bins), "ece_after": ece(cal, y, bins),
         "accuracy": float((cal.argmax(1) == y).mean()),
+        "macro_f1": float(f1_score(y, cal.argmax(1), average="macro", labels=list(range(probs.shape[1])), zero_division=0)),
         "suggested_conf_threshold": suggest_conf_threshold(cal, y, bins, min_bin),
     }
 
