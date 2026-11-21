@@ -1,0 +1,240 @@
+"""Triage tests. Synthetic data + a hashing "embedder" keep them offline and fast (< 1 min)."""
+import json
+import math
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+from sentineldesk.triage import TASKS  # noqa: E402
+from sentineldesk.triage.config import load_config  # noqa: E402
+from sentineldesk.triage.data import (TEST_INPUT_COLS, assert_disjoint, build_parts,  # noqa: E402
+                                      read_part, read_test_labels, write_parts)
+from sentineldesk.triage.keywords import KeywordMatcher  # noqa: E402
+from sentineldesk.triage.labels import load_labels  # noqa: E402
+from sentineldesk.triage.neighbours import NeighbourIndex  # noqa: E402
+from sentineldesk.triage.text import build_text, build_texts  # noqa: E402
+from sentineldesk.triage.training import train_all  # noqa: E402
+
+
+# ---------- fixtures ---------------------------------------------------------------------------
+class FakeEmbedder:
+    """Deterministic bag-of-hashed-words embedding (normalized), so tests need no model download."""
+
+    def __init__(self, dim: int = 128):
+        from sklearn.feature_extraction.text import HashingVectorizer
+
+        self.hv = HashingVectorizer(n_features=dim, alternate_sign=False, norm="l2")
+
+    def encode(self, texts, show_progress=False):
+        X = self.hv.transform(texts).toarray().astype(np.float32)
+        X[np.linalg.norm(X, axis=1) == 0, 0] = 1.0
+        return X
+
+
+TOPICS = {
+    ("Incident", "Technical Support", "high"): ("Server outage", "Our EMR system is down, kein Zugriff for all users since morning."),
+    ("Incident", "IT Support", "medium"): ("Laptop crashed", "My laptop crashed after the update and the screen stays black."),
+    ("Request", "Billing and Payments", "low"): ("Invoice question", "Please send a copy of the last invoice for our accounting team."),
+    ("Request", "Sales and Pre-Sales", "medium"): ("Pricing", "What does the enterprise plan cost for fifty seats?"),
+    ("Problem", "Product Support", "medium"): ("Sync problem", "Die Synchronisierung funktioniert nicht zuverlässig mit dem Kalender."),
+    ("Change", "IT Support", "low"): ("Upgrade request", "Please upgrade our firewall firmware to the latest version next week."),
+}
+
+
+def synthetic_df(n: int = 900, seed: int = 0) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    keys = list(TOPICS)
+    rows = []
+    for i in range(n):
+        k = keys[rng.integers(len(keys))]
+        subj, body = TOPICS[k]
+        subject = [subj, None, float("nan"), ""][rng.integers(4)]
+        rows.append({"subject": subject, "body": f"{body} ref {rng.integers(1000)} filler{rng.integers(30)}",
+                     "answer": "Thanks <name>, we are on it.", "type": k[0], "queue": k[1], "priority": k[2],
+                     "language": "en", "tag_1": "Outage" if k[2] == "high" else "Bug"})
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture(scope="module")
+def csv_path(tmp_path_factory):
+    path = tmp_path_factory.mktemp("data") / "tickets.csv"
+    synthetic_df().to_csv(path, index=False)
+    return path
+
+
+@pytest.fixture(scope="module")
+def parts(csv_path):
+    return build_parts(csv_path)
+
+
+@pytest.fixture(scope="module")
+def trained(tmp_path_factory, parts):
+    root = tmp_path_factory.mktemp("artifacts")
+    cfg = load_config()
+    cfg["model_tfidf"]["use_char"] = False
+    emb = FakeEmbedder()
+    embs = {k: emb.encode(build_texts(parts[k]["subject"], parts[k]["body"])) for k in ("train", "half_a", "half_b")}
+    meta = {"embedding_model": "fake", "prefix": "", "dim": 128}
+    train_all(cfg, {k: parts[k] for k in embs}, embs, root / "triage", meta,
+              test_ids=parts["test"]["ticket_id"].tolist())
+    write_parts(parts, root / "splits")
+    return root, emb
+
+
+def load_triage(root, emb):
+    from sentineldesk.triage.predict import Triage
+
+    return Triage.load(root, embedder=emb)
+
+
+# ---------- text ---------------------------------------------------------------------------------
+@pytest.mark.parametrize("subject", [None, float("nan"), "", "   "])
+def test_build_text_missing_subject(subject):
+    out = build_text(subject, "VPN is down")
+    assert out == "VPN is down" and "nan" not in out
+
+
+def test_build_text_raises_on_empty():
+    with pytest.raises(ValueError):
+        build_text(None, float("nan"))
+    with pytest.raises(ValueError):
+        build_text("", "  ")
+
+
+def test_build_text_nfkc():
+    assert build_text("ﬁle", "Ａ") == "file\nA"
+
+
+# ---------- split / leakage ---------------------------------------------------------------------
+def test_split_reproducible_disjoint_and_complete(parts, csv_path):
+    again = build_parts(csv_path)
+    for k in parts:
+        assert parts[k]["ticket_id"].tolist() == again[k]["ticket_id"].tolist()
+    all_ids = [i for p in parts.values() for i in p["ticket_id"]]
+    assert len(all_ids) == len(set(all_ids)) == 900
+    assert "answer" not in parts["test"].columns
+
+
+def test_parts_follow_team_split(parts, csv_path):
+    from split import load_split
+
+    kb, test = load_split(str(csv_path))
+    assert parts["test"]["ticket_id"].tolist() == test["ticket_id"].tolist()
+    triage_kb = set().union(*(parts[k]["ticket_id"] for k in ("train", "half_a", "half_b")))
+    assert triage_kb == set(kb["ticket_id"])
+
+
+def test_assert_disjoint_catches_leak():
+    with pytest.raises(AssertionError):
+        assert_disjoint({"train": ["TKT-00001"], "test": ["TKT-00001"]})
+
+
+def test_test_files_columns(trained):
+    root, _ = trained
+    assert list(pd.read_parquet(root / "splits" / "test_inputs.parquet").columns) == TEST_INPUT_COLS
+    assert list(pd.read_parquet(root / "splits" / "test_labels.parquet").columns) == ["ticket_id", "type", "queue", "priority"]
+    with pytest.raises(PermissionError):
+        read_part(root / "splits", "test_labels")
+    with pytest.raises(PermissionError):
+        read_test_labels(root / "splits", root / "does_not_exist.parquet")
+
+
+def test_no_holdout_id_in_index(trained, parts):
+    t = load_triage(*trained)
+    assert not set(t.nn.ids) & set(parts["test"]["ticket_id"])
+
+
+def test_real_split_files_if_present():
+    p = REPO_ROOT / "artifacts" / "splits" / "test_inputs.parquet"
+    if not p.exists():
+        pytest.skip("full split not built yet")
+    assert list(pd.read_parquet(p).columns) == TEST_INPUT_COLS
+
+
+# ---------- neighbours ----------------------------------------------------------------------------
+def test_neighbour_self_exclusion():
+    rng = np.random.default_rng(1)
+    emb = rng.normal(size=(50, 8)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    ids = [f"TKT-{i:05d}" for i in range(50)]
+    labels = {t: ["a", "b"] for t in TASKS}
+    codes = {t: rng.integers(2, size=50) for t in TASKS}
+    nn = NeighbourIndex(emb, ids, codes, labels, k=5)
+    S, I = nn.search(emb[:10], ids[:10])
+    for r in range(10):
+        assert ids[r] not in [ids[i] for i in I[r]]
+        assert len(I[r]) == 5
+    probs = nn.vote(S, I)
+    assert np.allclose(probs["type"].sum(1), 1)
+
+
+# ---------- keywords ------------------------------------------------------------------------------
+def test_keyword_matching():
+    kw = KeywordMatcher(["down", "kein Zugriff", "Störung", "can't access"])
+    assert kw.matches("please download the file")[0] == []
+    assert kw.matches("The server is DOWN!")[0] == ["down"]
+    assert kw.matches("Wir haben kein   Zugriff mehr")[0] == ["kein zugriff"]
+    assert kw.matches("kein Zugriffsrecht")[0] == []
+    assert kw.matches("Große STÖRUNG im Netz")[0] == ["störung"]
+    assert kw.matches("I can’t access email")[0] == ["can't access"]
+
+
+def test_keyword_yaml_loads():
+    kw = KeywordMatcher.from_yaml(REPO_ROOT / "keywords" / "outage_keywords.yaml")
+    assert "ausfall" in kw.keywords and "outage" in kw.keywords
+
+
+# ---------- predict -------------------------------------------------------------------------------
+REQUIRED = {"mode", "type", "queue", "priority", "critical", "neighbours", "suggested_conf_thresholds", "latency_ms"}
+
+
+def _check_output(out, labels):
+    assert REQUIRED <= set(out)
+    for t in TASKS:
+        assert list(out[t]["probs"]) == labels[t]
+        assert math.isclose(sum(out[t]["probs"].values()), 1.0, abs_tol=1e-6)
+        assert out[t]["label"] == max(out[t]["probs"], key=out[t]["probs"].get)
+    assert {"score", "threshold", "fires", "keyword_hits"} <= set(out["critical"])
+    assert len(out["neighbours"]["top"]) <= 5 and set(out["neighbours"]["explanation"]) == set(TASKS)
+    assert "total" in out["latency_ms"]
+
+
+def test_predict_full(trained):
+    root, emb = trained
+    t = load_triage(root, emb)
+    labels = load_labels(root / "triage" / "labels.json")
+    assert t.mode == "full"
+    en = t.predict("Server outage", "Our EMR system is down for all users")
+    _check_output(en, labels)
+    assert "emr" in en["critical"]["keyword_hits"]
+    _check_output(t.predict("Störung", "Die Synchronisierung funktioniert nicht"), labels)
+    _check_output(t.predict(None, "Please send the last invoice"), labels)
+    _check_output(t.predict("", "Please send the last invoice"), labels)
+    with pytest.raises(ValueError):
+        t.predict("", "")
+    assert len(t.predict_batch(["a", None], ["invoice please", "server down"])) == 2
+
+
+def test_fallback_mode(trained, tmp_path):
+    import shutil
+
+    root, emb = trained
+    shutil.copytree(root / "triage", tmp_path / "triage")
+    (tmp_path / "triage" / "ensemble.joblib").unlink()
+    t = load_triage(tmp_path, emb)
+    assert t.mode == "fallback"
+    _check_output(t.predict("Invoice", "Please send a copy of the invoice"), load_labels(tmp_path / "triage" / "labels.json"))
+
+
+def test_temperature_scaling_does_not_hurt_nll(trained):
+    root, _ = trained
+    calib = json.loads((root / "triage" / "calibration.json").read_text())
+    for mode in ("fallback", "full"):
+        for t in TASKS:
+            assert calib[mode][t]["nll_after"] <= calib[mode][t]["nll_before"] + 1e-9

@@ -45,3 +45,25 @@ artifacts/
 .idea/
 *.swp
 data/index/
+
+# Triage artifacts / model files anywhere in the repo (trained on Colab, shared as a zip)
+*.parquet
+*.npy
+*.npz
+*.joblib
+*.faiss
+sentineldesk_artifacts*.zip
+
+# Results: commit metrics JSON + plots at the end, never prediction dumps or sample runs
+results/sample_*/
+results/test_predictions.parquet
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Secrets (HF / Gemini tokens)
+.env
+.env.*
+*.pem
+credentials*.json
+.claude/settings.local.json
