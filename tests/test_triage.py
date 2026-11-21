@@ -145,6 +145,13 @@ def test_searchable_flag():
     assert not is_searchable("Thanks, we fixed it.")                       # under 40 chars
     assert not is_searchable("<name> <acc_num> <tel_num> <email> <name> <name>")  # placeholders only
     assert is_searchable("Dear <name>, please restart the VPN client and clear the cache, then retry.")
+    # data audit #7: broken / echo-only rows (needs subject + body)
+    ans = "Dear <name>, please restart the VPN client and clear the cache, then retry."
+    body = "Our VPN client keeps disconnecting every few minutes since this morning's update."
+    assert is_searchable(ans, "VPN drops", body)
+    assert not is_searchable(ans, "", "VPN broken")                                     # under 6 words
+    assert not is_searchable(ans, "Hi", "Hallo [Name], wir danken Ihnen für Ihr Interesse an unserem Produkt.")
+    assert not is_searchable(ans, "VPN", "Please restart the VPN client and clear the cache, then retry dear.")  # echo
 
 
 # ---------- split / leakage ---------------------------------------------------------------------

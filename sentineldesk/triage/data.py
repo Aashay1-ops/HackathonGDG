@@ -76,20 +76,41 @@ KB_INDEX_COLS = ["ticket_id", "text", "subject", "answer", "language", "type", "
     f"tag_{i}" for i in range(1, 9)
 ]
 _PLACEHOLDER = re.compile(r"<[^<>\s]{1,40}>")
+_WORD = re.compile(r"(?u)\b[^\W\d_]{2,}\b")
+# Data audit #7 (docs/DATA_PREPROCESSING.md section 5): a customer body written in the agent's voice.
+_AGENT_OPENER = re.compile(
+    r"(?i)^\s*(?:thank you|thanks for|we appreciate|we apologi[sz]e|we are sorry|we're sorry|"
+    r"vielen dank|danke für|wir entschuldigen|es tut uns leid|wir freuen uns|wir schätzen|wir danken|"
+    r"(?:dear|hello|hi|hallo|sehr geehrte\w*)\s+(?:\[|<|\{)?\s*(?:name|ihr name)\b)")
 
 
-def is_searchable(answer) -> bool:
-    """README rule: False for empty, placeholder-only or under-40-character answers."""
-    if answer is None or (isinstance(answer, float) and math.isnan(answer)):
+def _text(x) -> str:
+    return "" if x is None or (isinstance(x, float) and math.isnan(x)) else str(x)
+
+
+def is_searchable(answer, subject=None, body=None) -> bool:
+    """False for empty, placeholder-only or under-40-character answers (README), and, when subject/body
+    are given, for the audit's broken rows: agent-voice opener, body/answer word Jaccard >= 0.60
+    (copied or echo-only answer), or under 6 words of subject + body.
+    ponytail: the audit's agent-voice classifier is not used (needs a trained model); ~2.5% of
+    broken rows remain per the audit's sample."""
+    a = _text(answer).strip()
+    if len(a) < 40 or not re.search(r"[^\W\d_]", _PLACEHOLDER.sub("", a)):
         return False
-    a = str(answer).strip()
-    return len(a) >= 40 and bool(re.search(r"[^\W\d_]", _PLACEHOLDER.sub("", a)))
+    if body is None:
+        return True
+    s, b = _text(subject), _text(body)
+    if len((s + " " + b).split()) < 6 or _AGENT_OPENER.match(b):
+        return False
+    wa, wb = {w.lower() for w in _WORD.findall(a)}, {w.lower() for w in _WORD.findall(b)}
+    return not (wa and wb and len(wa & wb) / len(wa | wb) >= 0.60)
 
 
 def kb_index_frame(kb: pd.DataFrame) -> pd.DataFrame:
     """Rows for data/index/kb.pkl, in load_split() order, plus the `searchable` flag."""
     out = kb[[c for c in KB_INDEX_COLS if c in kb.columns]].reset_index(drop=True).copy()
-    out["searchable"] = out["answer"].map(is_searchable)
+    body = kb["body"].reset_index(drop=True) if "body" in kb.columns else [None] * len(out)
+    out["searchable"] = [is_searchable(a, s, b) for a, s, b in zip(out["answer"], out["subject"], body)]
     return out
 
 
