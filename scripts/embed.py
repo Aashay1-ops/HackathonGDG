@@ -16,7 +16,9 @@ import pandas as pd
 from _common import REPO_ROOT, parser, setup_logging
 
 from sentineldesk.triage.config import artifacts_dir, embedding_prefix, load_config, model_slug
-from sentineldesk.triage.data import assert_no_test_ids, ensure_csv, kb_index_frame, read_part
+from sentineldesk.triage import TASKS
+from sentineldesk.triage.data import (TRAIN_COLS, assert_no_test_ids, ensure_csv, family_calib_split,
+                                      kb_index_frame, paraphrase_families, read_part)
 from sentineldesk.triage.embed import Embedder
 from sentineldesk.triage.text import build_texts
 from split import load_split
@@ -64,6 +66,28 @@ def main() -> None:
         t0 = time.perf_counter()
         E = emb.encode(texts, show_progress=True)
         print(f"kb: {E.shape} in {time.perf_counter() - t0:.1f}s")
+
+        # Data audit #3/#4: redraw halves A/B by whole paraphrase family (needs these embeddings, so it
+        # happens here, not in build_split.py) and overwrite the random calibration parts.
+        thr = cfg["calibration"].get("family_threshold", 0.98)
+        family, top1, nn1 = paraphrase_families(E, thr)
+        sizes = np.bincount(family)
+        print(f"paraphrase families @ cosine>={thr}: {len(sizes)} families, largest {sizes.max()}, "
+              f"{(sizes[family] > 1).mean():.1%} of KB tickets have a reworded copy")
+        if sizes.max() > 0.02 * len(kb):
+            raise SystemExit(f"Largest family has {sizes.max()} tickets (>2% of KB): {thr} is too low for "
+                             f"{model}; raise calibration.family_threshold in configs/triage.yaml")
+        for lo, hi in ((0.99, 1.01), (thr, 0.99), (0.95, thr), (-1, 0.95)):  # label agreement with nearest KB ticket
+            m = (top1 >= lo) & (top1 < hi)
+            if m.any():
+                agree = {t: f"{(kb[t].to_numpy()[m] == kb[t].to_numpy()[nn1[m]]).mean():.1%}" for t in TASKS}
+                print(f"  nearest-KB cosine [{lo:.2f}, {min(hi, 1):.2f}): {m.sum()} tickets, same labels {agree}")
+        fam_parts = dict(zip(PARTS, family_calib_split(kb, family)))
+        for part, df in fam_parts.items():
+            df[[c for c in TRAIN_COLS if c in df.columns]].to_parquet(root / "splits" / f"{part}.parquet", index=False)
+        part_ids = {k: v["ticket_id"].tolist() for k, v in fam_parts.items()}
+        print("family-aware calibration parts: " + ", ".join(f"{k}={len(v)}" for k, v in part_ids.items()))
+
         row = {tid: i for i, tid in enumerate(kb["ticket_id"])}
         for part in PARTS:
             save_part(out, part, E[[row[t] for t in part_ids[part]]], part_ids[part])
