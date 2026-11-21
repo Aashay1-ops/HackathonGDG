@@ -21,7 +21,7 @@ Checks (all run every time, so the agent sees every failure)
     language          the whole reply and every full sentence are in the ticket's language        VERIFY_FAILED
     unsupported_asks  the LLM listed nothing it could not ground                                  UNSUPPORTED_ASK
 
-Pure Python: re, difflib, decimal, the repo's pii module and sentineldesk.language. About a millisecond per draft.
+Pure Python: re, difflib, decimal, the repo's pii module and sentineldesk.language. Typically a few ms per draft.
 """
 from __future__ import annotations
 
@@ -45,11 +45,16 @@ UNSUPPORTED_ASK = "UNSUPPORTED_ASK"
 _TKT = re.compile(r"\bTKT-\d{5}\b")
 _PH_ANY = re.compile(r"<[A-Za-z][A-Za-z_ -]{0,30}>")   # any <placeholder>, any case
 _URL = re.compile(r"(?:https?://|www\.)[^\s<>\]\)]+", re.I)
-_OBF_EMAIL = re.compile(r"\b[\w.+-]+\s*[(\[]\s*(?:at|ät)\s*[)\]]\s*[\w-]+(?:\s*[(\[]\s*(?:dot|punkt)\s*[)\]]\s*\w+)+", re.I)
+_TLDS = "com|de|net|org|io|eu|ch|at|info|biz|co|uk|app|dev|shop|online|cloud|tech"
+_DOMAIN = re.compile(rf"\b(?:[a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\.){{1,4}}(?:{_TLDS})\b(?:/[^\s<>()\]]*)?", re.I)
+_AT_B, _DOT_B = r"\s*[(\[]\s*(?:at|ät)\s*[)\]]\s*", r"\s*[(\[]\s*(?:dot|punkt)\s*[)\]]\s*"
+_OBF_EMAIL = re.compile(   # name(at)firma.de, name [at] firma [dot] de, name at firma dot com
+    rf"\b[\w.+-]{{1,64}}{_AT_B}[\w-]{{1,63}}(?:(?:{_DOT_B}|\.)[\w-]{{1,63}}){{1,4}}"
+    rf"|\b[\w.+-]{{1,64}}\s+(?:at|ät)\s+[\w-]{{1,63}}(?:\s+(?:dot|punkt)\s+[\w-]{{1,63}}){{1,4}}\b", re.I)
 _ALPHA_WORD = re.compile(r"[A-Za-zÄÖÜäöüß]{2,}")
 
 # ---------------------------------------------------------------- units (en + de -> one canonical name)
-_UNIT_WORDS = {
+_TIME_UNIT_WORDS = {
     "second": "second seconds sec secs sekunde sekunden",
     "minute": "minute minutes min mins minute minuten",
     "hour": "hour hours hr hrs h std stunde stunden",
@@ -57,7 +62,10 @@ _UNIT_WORDS = {
     "week": "week weeks woche wochen",
     "month": "month months monat monate monaten monats",
     "year": "year years yr yrs jahr jahre jahren jahres",
-    "times": "times time mal fach",
+}
+_UNIT_WORDS = {
+    **_TIME_UNIT_WORDS,
+    "times": "times mal fach",   # not "time": "one-time password" is not a quantity
     "data_kb": "kb", "data_mb": "mb", "data_gb": "gb", "data_tb": "tb",
     "user": "user users nutzer benutzer benutzerin",
     "seat": "seat seats platz plätze",
@@ -65,10 +73,16 @@ _UNIT_WORDS = {
     "device": "device devices gerät geräte",
 }
 _UNITS = {w: canon for canon, words in _UNIT_WORDS.items() for w in words.split()}
+_TIME_UNITS = {w for words in _TIME_UNIT_WORDS.values() for w in words.split()}
 _FILLERS = ("more additional extra full further business working calendar weitere weiteren zusätzliche "
             "zusätzlichen volle vollen ganze ganzen").split()
+# words that end the search for a unit: "Option 2 for business users" is not "2 users"
+_STOP = ("a an the of to for in on at by per with from and or than as is are was be this that these your our "
+         "der die das den dem des ein eine einen einem einer eines für von zu zum zur in im am an auf mit pro "
+         "und oder als ist sind ihr ihre ihren unser unsere").split()
 _CURRENCY = {"€": "EUR", "eur": "EUR", "euro": "EUR", "euros": "EUR", "$": "USD", "usd": "USD", "dollar": "USD",
-             "dollars": "USD", "£": "GBP", "gbp": "GBP", "chf": "CHF", "cent": "CENT", "cents": "CENT"}
+             "dollars": "USD", "£": "GBP", "gbp": "GBP", "pound": "GBP", "pounds": "GBP", "pfund": "GBP",
+             "chf": "CHF", "franken": "CHF", "franc": "CHF", "francs": "CHF", "cent": "CENT", "cents": "CENT"}
 _PCT_WORDS = ("%", "percent", "per cent", "prozent", "pct")
 
 
@@ -76,11 +90,15 @@ def _alt(words) -> str:
     return "|".join(sorted((re.escape(w) for w in words), key=len, reverse=True))
 
 
-_UNIT_RE, _FILL_RE = _alt(_UNITS), _alt(_FILLERS)
+_UNIT_RE, _FILL_RE, _STOP_RE = _alt(_UNITS), _alt(_FILLERS), _alt(_STOP)
+_TIME_RE = _alt(_TIME_UNITS)
 _CUR_SYM_RE, _CUR_WORD_RE = r"€|\$|£", _alt(k for k in _CURRENCY if k.isalpha())
 _PCT_RE = _alt(_PCT_WORDS)
-_GAP = rf"(?:[\s-]+(?:{_FILL_RE}))*[\s-]?"   # optional filler words between a number and its unit
-_NUM = r"\d{1,3}(?:[ \u00a0\u202f'\u2019]\d{3})+(?:[.,]\d+)?(?!\d)|\d+(?:[.,]\d+)*"  # 1 000,50 / 1'000 / 1.000,50
+_WORD = r"[A-Za-zÄÖÜäöüß]+"
+_GAP = rf"(?:[\s-]+(?:{_FILL_RE}))*[\s-]?"   # filler words only (between a number and %, currency)
+# up to two words between a number and its unit, unless one of them is a stop word ("2 free months")
+_GAP_ANY = rf"(?:[\s-]+(?!(?:{_STOP_RE})\b){_WORD}){{0,2}}[\s-]?"
+_NUM = r"(?:\d{1,3}(?:[   '’]\d{3})+(?:[.,]\d+)?(?!\d)|\d+(?:[.,]\d+)*)(?:[.,]-)?"  # 1 000,50 / 50,-
 
 # ---------------------------------------------------------------- number words (en + de)
 _EN_SMALL = {w: i for i, w in enumerate(
@@ -89,23 +107,22 @@ _EN_SMALL = {w: i for i, w in enumerate(
 _EN_TENS = {w: 10 * i for i, w in enumerate("_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()) if i > 1}
 _EN_SCALE = {"hundred": 100, "thousand": 1000, "dozen": 12}
 _EN_WORDS = set(_EN_SMALL) | set(_EN_TENS) | set(_EN_SCALE)
-_DE_SMALL = {"null": 0, "ein": 1, "eins": 1, "eine": 1, "einen": 1, "einem": 1, "einer": 1, "zwei": 2, "drei": 3,
-             "vier": 4, "fünf": 5, "sechs": 6, "sieben": 7, "acht": 8, "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12,
-             "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15, "sechzehn": 16, "siebzehn": 17, "achtzehn": 18,
-             "neunzehn": 19}
+_DE_ARTICLES = {"ein", "eine", "einen", "einem", "einer", "eines"}  # "one" only before a time unit
+_DE_SMALL = {"null": 0, "eins": 1, "zwei": 2, "drei": 3, "vier": 4, "fünf": 5, "sechs": 6, "sieben": 7,
+             "acht": 8, "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "dreizehn": 13, "vierzehn": 14,
+             "fünfzehn": 15, "sechzehn": 16, "siebzehn": 17, "achtzehn": 18, "neunzehn": 19}
 _DE_TENS = {"zwanzig": 20, "dreißig": 30, "dreissig": 30, "vierzig": 40, "fünfzig": 50, "sechzig": 60,
             "siebzig": 70, "achtzig": 80, "neunzig": 90}
-_DE_STEM = re.compile(r"[a-zäöüß]*(?:ein|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf|zig|ßig|ssig|"
-                      r"hundert|tausend|null)[a-zäöüß]*")
+_DE_ADJ_UNITS = {"tägig": "Tage", "wöchig": "Wochen", "monatig": "Monate", "jährig": "Jahre",
+                 "stündig": "Stunden", "minütig": "Minuten"}
 
 
 def _en_value(phrase: str) -> int | None:
     toks = [t for t in re.split(r"[\s-]+", phrase.lower()) if t and t != "and"]
     if toks and toks[0] in ("a", "an"):
         toks = toks[1:]
-        if not toks or toks[0] not in _EN_SCALE:
-            return None
-        toks = ["one"] + toks
+        if toks and toks[0] in _EN_SCALE:  # "a hundred" = 100; otherwise the article is just dropped
+            toks = ["one"] + toks
     total = cur = 0
     for t in toks:
         if t in _EN_SMALL:
@@ -120,10 +137,11 @@ def _en_value(phrase: str) -> int | None:
             cur = (cur or 1) * 12
         else:
             return None
-    return total + cur
+    return total + cur if toks else None
 
 
 def _de_value(word: str) -> int | None:
+    """A complete German number word ("vierundzwanzig", "zweihundert"); anything else (einige, keine) is None."""
     w = word.lower()
     if w in _DE_SMALL:
         return _DE_SMALL[w]
@@ -132,44 +150,74 @@ def _de_value(word: str) -> int | None:
     for scale, mult in (("tausend", 1000), ("hundert", 100)):
         if scale in w:
             head, tail = w.split(scale, 1)
-            h = _de_value(head) if head else 1
+            h = 1 if head in ("", "ein") else _de_value(head)
             t = _de_value(tail.removeprefix("und")) if tail else 0
             return None if h is None or t is None else h * mult + t
     if "und" in w:
         ones, tens = w.split("und", 1)
-        if ones in _DE_SMALL and 1 <= _DE_SMALL[ones] <= 9 and tens in _DE_TENS:
-            return _DE_SMALL[ones] + _DE_TENS[tens]
+        o = 1 if ones == "ein" else _DE_SMALL.get(ones)
+        if o is not None and 1 <= o <= 9 and tens in _DE_TENS:
+            return o + _DE_TENS[tens]
     return None
 
 
 _EN_RUN = re.compile(rf"\b(?:(?:a|an)[\s-]+)?(?:{_alt(_EN_WORDS)})(?:[\s-]+(?:and[\s-]+)?(?:{_alt(_EN_WORDS)}))*\b", re.I)
-_FOLLOWED_BY_UNIT = re.compile(rf"{_GAP}(?:{_UNIT_RE}|{_CUR_WORD_RE}|{_PCT_RE})\b|\s?(?:{_CUR_SYM_RE}|%)", re.I)
+_FOLLOWED_BY_UNIT = re.compile(rf"{_GAP_ANY}(?:{_UNIT_RE}|{_CUR_WORD_RE}|{_PCT_RE})\b|\s?(?:{_CUR_SYM_RE}|%)", re.I)
+_HALF = re.compile(rf"\b(?:half|halbe[nrs]?|halb)[\s-]+(?:(?:an?|ein(?:e[nmrs]?)?)\s+)?(?={_GAP}(?:{_TIME_RE})\b)", re.I)
+_ARTICLE_TIME = re.compile(rf"\b(?:a|an|ein|eine|einen|einem|einer|eines)(?=\s+{_GAP}(?:{_TIME_RE})\b)", re.I)
+_DE_ADJ = re.compile(rf"\b(\d+|{_WORD}?)-?({_alt(_DE_ADJ_UNITS)})(?:e[nmrs]?)?\b", re.I)
+_FRACTION = {"half": "0.5", "hälfte": "0.5", "halbe": "0.5", "halben": "0.5", "halber": "0.5",
+             "quarter": "0.25", "viertel": "0.25", "double": "2", "doppelt": "2", "doppelte": "2",
+             "doppelten": "2", "doppelter": "2", "triple": "3", "dreifach": "3"}
+_FRACTION_RE = re.compile(rf"\b(?:{_alt(_FRACTION)})\b", re.I)
 
 
 def _convert_number_words(text: str, unreadable: list[str]) -> str:
-    """Number words before a unit/currency/percent become digits ("twenty-four hours" -> "24 hours").
-    Number words that are not quantities ("one of our agents") are left alone. A quantity written in words
-    that can't be read is recorded in `unreadable`, so the numbers check fails instead of skipping it."""
-    def handle(span: str, value: int | None) -> str:
+    """Rewrite quantities written in words as digits, so the patterns below can read them.
+    "twenty-four hours" -> "24 hours", "an hour" -> "1 hour", "half an hour" -> "0.5 hour",
+    "zweiwöchige" -> "2 Wochen", "vierundzwanzig Stunden" -> "24 Stunden". Number words that are not
+    quantities ("one of our agents", "einige", "keine") are left alone. An English quantity in words that
+    can't be read is recorded in `unreadable`, so the numbers check fails instead of skipping it."""
+    def de_adj(m):
+        prefix, value = m.group(1), None
+        if prefix.isdigit():
+            value = prefix
+        elif prefix.lower() in ("halb", "halbe"):
+            value = "0.5"
+        elif prefix.lower() in ("ein", "einen"):
+            value = "1"
+        elif prefix and (v := _de_value(prefix)) is not None:
+            value = str(v)
         if value is None:
-            unreadable.append(span)
-            return " " * len(span)
-        return str(value)
+            if prefix:
+                unreadable.append(m.group(0))
+                return " " * len(m.group(0))
+            return m.group(0)
+        return f"{value} {_DE_ADJ_UNITS[m.group(2).lower()]}"
+
+    text = _DE_ADJ.sub(de_adj, text)
+    text = _HALF.sub("0.5 ", text)
+    text = _ARTICLE_TIME.sub("1", text)
 
     def en(m):
         if not _FOLLOWED_BY_UNIT.match(text, m.end()):
             return m.group(0)
-        return handle(m.group(0), _en_value(m.group(0)))
+        v = _en_value(m.group(0))
+        if v is None:
+            unreadable.append(m.group(0))
+            return " " * len(m.group(0))
+        return str(v)
 
     text = _EN_RUN.sub(en, text)
 
     def de(m):
-        if not _FOLLOWED_BY_UNIT.match(text, m.end()):
-            return m.group(0)
-        word = m.group(0)
-        return handle(word, _de_value(word))
+        w = m.group(0)
+        if w.lower() in _DE_ARTICLES or not _FOLLOWED_BY_UNIT.match(text, m.end()):
+            return w
+        v = _de_value(w)
+        return w if v is None else str(v)
 
-    return re.sub(rf"\b(?:{_DE_STEM.pattern})\b", de, text, flags=re.I)
+    return re.sub(rf"\b{_WORD}\b", de, text)
 
 
 # ---------------------------------------------------------------- reading a number string
@@ -181,8 +229,9 @@ def _readings(raw: str, lang: str | None, money: bool = False) -> frozenset[str]
     """What a number string means, read the way `lang` writes numbers.
     en: ',' groups thousands, '.' is the decimal point. de: the reverse. Both present: the last one is decimal.
     A single separator followed by exactly 3 digits is the only ambiguous case; it is read by `lang` (both
-    readings only if the language is unknown). Version-like strings (8.0.1) are kept as written."""
-    raw = re.sub(r"[ \u00a0\u202f'\u2019]", "", raw)  # space/apostrophe thousands separators
+    readings only if the language is unknown), and money never has 3 decimals. Version-like strings (8.0.1)
+    are kept as written. "50,-" is 50."""
+    raw = re.sub(r"[.,]-$", "", re.sub(r"[   '’]", "", raw))
     if sum(c.isdigit() for c in raw) > MAX_DIGITS:
         return frozenset({f"raw:{raw}"})
     seps = set(re.findall(r"[.,]", raw))
@@ -216,66 +265,140 @@ def _readings(raw: str, lang: str | None, money: bool = False) -> frozenset[str]
 
 
 # ---------------------------------------------------------------- dates and times
+_MONTHS = {}
+for _i, _names in enumerate(["january jan januar jänner jaenner", "february feb februar", "march mar märz maerz mrz",
+                             "april apr", "may mai", "june jun juni", "july jul juli", "august aug",
+                             "september sep sept", "october oct oktober okt", "november nov", "december dec dezember dez"], 1):
+    for _n in _names.split():
+        _MONTHS[_n] = _i
+_MONTH_RE = _alt(_MONTHS)
+
+
 def _iso(y: int, m: int, d: int) -> str | None:
     if y < 100:
         y += 2000
     return f"{y:04d}-{m:02d}-{d:02d}" if 1 <= m <= 12 and 1 <= d <= 31 else None
 
 
-def _date_readings(s: str) -> frozenset[str]:
+def _date_readings(s: str, lang: str | None) -> frozenset[str]:
+    """Dates as 'date:YYYY-MM-DD' (or 'md:MM-DD' without a year). A slash date whose day and month could be
+    swapped is only matched exactly ('slash:...') unless the ticket is German (always DD/MM)."""
     s = s.strip()
+    out: set = set()
     if m := re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", s):
-        iso = {_iso(int(m[1]), int(m[2]), int(m[3]))}
+        out.add(_iso(int(m[1]), int(m[2]), int(m[3])))
     elif m := re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{2,4})", s):
-        iso = {_iso(int(m[3]), int(m[2]), int(m[1]))}
-    elif m := re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", s):  # en may be MM/DD, others DD/MM
-        iso = {_iso(int(m[3]), int(m[2]), int(m[1])), _iso(int(m[3]), int(m[1]), int(m[2]))}
-    else:
-        iso = set()
-    iso.discard(None)
-    return frozenset({f"date:{x}" for x in iso} or {f"raw:{s}"})
+        out.add(_iso(int(m[3]), int(m[2]), int(m[1])))
+    elif m := re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", s):
+        a, b, y = int(m[1]), int(m[2]), int(m[3])
+        if lang == "de" or a > 12:
+            out.add(_iso(y, b, a))
+        elif b > 12:
+            out.add(_iso(y, a, b))
+        else:
+            return frozenset({f"slash:{a}/{b}/{y % 100}"})
+    out.discard(None)
+    return frozenset({f"date:{x}" for x in out} or {f"raw:{s}"})
+
+
+def _month_date(m) -> frozenset[str]:
+    g = m.groupdict()
+    day, month = int(g.get("d1") or g.get("d2")), _MONTHS[(g.get("m1") or g.get("m2")).lower().rstrip(".")]
+    year = g.get("y1") or g.get("y2") or g.get("y3")
+    if year:
+        iso = _iso(int(year), month, day)
+        return frozenset({f"date:{iso}"} if iso else {f"raw:{m.group(0)}"})
+    return frozenset({f"md:{month:02d}-{day:02d}"})
+
+
+def _time_value(h: int, mins: str, ampm: str | None) -> frozenset[str]:
+    ampm = (ampm or "").lower().replace(".", "")
+    if ampm == "pm" and h < 12:
+        h += 12
+    if ampm == "am" and h == 12:
+        h = 0
+    return frozenset({f"time:{h}:{mins or '00'}"})
 
 
 # ---------------------------------------------------------------- extraction
 _PATTERNS = [  # most specific first; each match is blanked so later patterns can't re-read it
+    ("mdate", re.compile(rf"\b(?P<d1>\d{{1,2}})(?:st|nd|rd|th)?\.?\s+(?P<m1>{_MONTH_RE})\b\.?(?:\s*,?\s*(?P<y1>\d{{4}}))?"
+                         rf"|\b(?P<m2>{_MONTH_RE})\b\.?\s+(?P<d2>\d{{1,2}})(?:st|nd|rd|th)?\b(?:\s*,?\s*(?P<y2>\d{{4}}))?", re.I)),
     ("date", re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}\.\d{1,2}\.\d{2,4}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b")),
-    ("time", re.compile(r"\b(\d{1,2}):(\d{2})\b")),
+    ("time", re.compile(r"\b(?P<h>\d{1,2})(?::(?P<mm>\d{2}))?\s?(?P<ap>a\.?m\.?|p\.?m\.?)(?![a-z])"
+                        r"|\b(?P<h2>\d{1,2})(?::(?P<mm2>\d{2}))?\s?Uhr\b|\b(?P<h3>\d{1,2}):(?P<mm3>\d{2})\b", re.I)),
     ("always", re.compile(r"\b24\s?/\s?7\b")),
+    ("range", re.compile(rf"(?P<a>{_NUM})\s*(?:-|–|to|bis|until)\s*(?P<b>{_NUM}){_GAP_ANY}"
+                         rf"(?P<u>{_UNIT_RE}|{_PCT_RE}|{_CUR_WORD_RE}|{_CUR_SYM_RE})(?![a-zäöüß])", re.I)),
     ("cur", re.compile(rf"(?P<c1>{_CUR_SYM_RE}|\b(?:{_CUR_WORD_RE})\b)\s?(?P<n1>{_NUM})"
-                       rf"|(?P<n2>{_NUM}){_GAP}(?P<c2>{_CUR_SYM_RE}|\b(?:{_CUR_WORD_RE})\b)", re.I)),
+                       rf"|(?P<n2>{_NUM}){_GAP_ANY}(?P<c2>{_CUR_SYM_RE}|\b(?:{_CUR_WORD_RE})\b)", re.I)),
     ("pct", re.compile(rf"(?P<n>{_NUM}){_GAP}(?:{_PCT_RE})(?![a-z])", re.I)),
-    ("qty", re.compile(rf"(?P<n>{_NUM}){_GAP}(?P<u>{_UNIT_RE})\b", re.I)),
+    ("qty", re.compile(rf"(?P<n>{_NUM}){_GAP_ANY}(?P<u>{_UNIT_RE})\b", re.I)),
+    ("frac", _FRACTION_RE),
     ("num", re.compile(_NUM)),
 ]
-TYPED = ("cur", "pct", "qty")
+TYPED = ("cur", "pct", "qty", "frac")
+_PRODUCT_BEFORE = re.compile(r"([A-Za-z][\w+]*)\s+$")
 
 
-def extract_values(text: str, lang: str | None = None) -> list[tuple[str, frozenset, str]]:
+def _typed(unit_token: str, number: str, lang: str | None) -> tuple[str, frozenset]:
+    u = unit_token.lower()
+    if u in _CURRENCY:
+        return "cur", frozenset(f"{_CURRENCY[u]}:{r}" for r in _readings(number, lang, money=True))
+    if u in _PCT_WORDS or u == "%":
+        return "pct", frozenset(f"%:{r}" for r in _readings(number, lang))
+    return "qty", frozenset(f"{_UNITS[u]}:{r}" for r in _readings(number, lang))
+
+
+def extract_values(text: str, lang: str | None = None, context: str | None = None) -> list[tuple[str, frozenset, str]]:
     """Every number-bearing claim as (kind, possible normalised values, the text as written).
-    A quantity written in words that can't be read comes back with no values, so it never matches."""
+    A quantity written in words that can't be read comes back with no values, so it never matches.
+    `context` (ticket + sources, lowercased) lets "Windows 10 users" read as a version when it names a
+    product they mention; without it (reading a source) such a number is read both ways."""
     text = _PH_ANY.sub(" ", _TKT.sub(" ", text or ""))
     unreadable: list[str] = []
     text = _convert_number_words(text, unreadable)
     found = [("unreadable", frozenset(), s.strip()) for s in unreadable]
     for kind, rx in _PATTERNS:
-        def take(m, kind=kind):
+        def take(m, kind=kind, src=text):
             s = m.group(0)
-            if kind == "date":
-                vals = _date_readings(s)
+            if kind == "mdate":
+                found.append(("date", _month_date(m), s.strip()))
+            elif kind == "date":
+                found.append(("date", _date_readings(s, lang), s.strip()))
             elif kind == "time":
-                vals = frozenset({f"time:{int(m.group(1))}:{m.group(2)}"})
+                g = m.groupdict()
+                h, mins, ap = ((g["h"], g["mm"], g["ap"]) if g["h"] else (g["h2"], g["mm2"], None) if g["h2"]
+                               else (g["h3"], g["mm3"], None))
+                found.append(("time", _time_value(int(h), mins, ap), s.strip()))
             elif kind == "always":
-                vals = frozenset({"always:24/7"})
+                found.append(("always", frozenset({"always:24/7"}), s.strip()))
+            elif kind == "range":  # "1 to 5 business days": both ends carry the unit
+                for n in (m.group("a"), m.group("b")):
+                    k, vals = _typed(m.group("u"), n, lang)
+                    found.append((k, vals, f"{n} {m.group('u')} (in '{s.strip()}')"))
             elif kind == "cur":
                 n, c = (m.group("n1"), m.group("c1")) if m.group("n1") else (m.group("n2"), m.group("c2"))
-                vals = frozenset(f"{_CURRENCY[c.lower()]}:{r}" for r in _readings(n, lang, money=True))
+                found.append(("cur", _typed(c, n, lang)[1], s.strip()))
             elif kind == "pct":
-                vals = frozenset(f"%:{r}" for r in _readings(m.group("n"), lang))
+                found.append(("pct", frozenset(f"%:{r}" for r in _readings(m.group("n"), lang)), s.strip()))
             elif kind == "qty":
-                vals = frozenset(f"{_UNITS[m.group('u').lower()]}:{r}" for r in _readings(m.group("n"), lang))
+                n, u = m.group("n"), m.group("u")
+                vals = frozenset(f"{_UNITS[u.lower()]}:{r}" for r in _readings(n, lang))
+                prod = _PRODUCT_BEFORE.search(src, 0, m.start())
+                if prod and any(c.isupper() or c.isdigit() for c in prod.group(1)):  # Windows, iOS, PHP, M365
+                    named = f"{prod.group(1)} {n}".lower()
+                    if context is None:  # a source: "Windows 10 users" also grounds a plain 10
+                        found.append(("num", _readings(n, lang), f"{prod.group(1)} {n}"))
+                    elif named in context:  # the reply names a product version the ticket/sources mention
+                        found.append(("num", _readings(n, lang), f"{prod.group(1)} {n}"))
+                        return " " * len(s)
+                found.append(("qty", vals, s.strip()))
+            elif kind == "frac":
+                v = _FRACTION[s.lower()]
+                found.append(("frac", frozenset({f"times:{v}"} if v in ("2", "3") else {f"frac:{v}"}), s.strip()))
             else:
-                vals = _readings(s, lang)
-            found.append((kind, vals, s.strip()))
+                found.append(("num", _readings(s, lang), s.strip()))
             return " " * len(s)
         text = rx.sub(take, text)
     return found
@@ -320,16 +443,27 @@ def _check_citations(reply, cited, retrieved_ids):
 def _check_numbers(reply, lang, answers, ticket_text):
     """Amounts, percentages and quantities with a unit must be in a retrieved answer with the same unit.
     Plain numbers, dates and times may also come from the customer's ticket (versions, order numbers)."""
-    claims = extract_values(reply, lang)
+    context = " ".join([ticket_text] + [t for t, _ in answers]).lower()
+    claims = extract_values(reply, lang, context=context)
     if not claims:
         return True, "no numbers in the reply"
+
+    def grounding(vals):  # what a source value also vouches for
+        out = set(vals)
+        for v in vals:
+            if v.startswith("date:"):  # a full date also grounds the same day without a year
+                out.add("md:" + v[10:])
+            if v.startswith("%:") and v[2:] in ("50", "25"):  # 50% also grounds "half", 25% "a quarter"
+                out.add("frac:" + {"50": "0.5", "25": "0.25"}[v[2:]])
+        return out
+
     typed_ok, plain_ok = set(), set()
     for text, src_lang in answers:
         for kind, vals, _ in extract_values(text, src_lang):
-            (typed_ok if kind in TYPED else plain_ok).update(vals)
+            (typed_ok if kind in TYPED else plain_ok).update(grounding(vals))
     for kind, vals, _ in extract_values(ticket_text, lang):
         if kind not in TYPED:
-            plain_ok.update(vals)
+            plain_ok.update(grounding(vals))
     missing = [s for kind, vals, s in claims if not (vals & (typed_ok if kind in TYPED else plain_ok))]
     if missing:
         return False, f"not grounded (amounts, % and durations need a retrieved answer): {missing}"
@@ -350,18 +484,19 @@ def _check_placeholders(reply, sources):
     squash = lambda s: re.sub(r"\s+", " ", s).strip()
     corpus = squash(" ".join(sources))
     leaked = []
-    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, plain, masked, autojunk=False).get_opcodes():
-        if op == "equal":
-            continue
-        while i1 > 0 and not plain[i1 - 1].isspace():  # widen to whole words for the check and the evidence
-            i1 -= 1
-        while i2 < len(plain) and not plain[i2].isspace():
-            i2 += 1
-        span = squash(plain[i1:i2]).strip(".,;:!?()")
-        tags = sorted(set(_PH_ANY.findall(masked[max(0, j1 - 40):j2 + 40]))) or ["<pii>"]
-        if span and span not in corpus and not any(span in x for x in leaked):
-            leaked.append(f"{span!r} -> {'/'.join(tags)}")
-    leaked += [f"{u!r} (link)" for u in _URL.findall(reply) if u.rstrip(".,;") not in corpus]
+    if masked != plain:  # word-level diff: fast, and the evidence is whole words
+        pw, mw = plain.split(), masked.split()
+        for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, pw, mw, autojunk=False).get_opcodes():
+            if op == "equal":
+                continue
+            span = " ".join(pw[i1:i2]).strip(".,;:!?()")
+            tags = sorted(set(_PH_ANY.findall(" ".join(mw[j1:j2])))) or ["<pii>"]
+            if span and span not in corpus and not any(span in x for x in leaked):
+                leaked.append(f"{span!r} -> {'/'.join(tags)}")
+    low = corpus.lower()
+    links = {u.rstrip(".,;:!?") for u in _URL.findall(reply) + _DOMAIN.findall(reply)}
+    leaked += [f"{u!r} (link)" for u in sorted(links) if u.lower() not in low
+               and not any(u in other and u != other for other in links)]
     leaked += [f"{e!r} (email)" for e in _OBF_EMAIL.findall(reply)]
     if leaked:
         problems.append(f"personal data or links not in any source (invented by the model): {leaked[:4]}")
@@ -380,12 +515,17 @@ def _check_language(reply, lang):
     whole = detect_language_with_confidence(body=clean)
     if whole.language != lang:
         return False, f"reply detected as '{whole.language}' ({whole.confidence:.2f}), ticket is '{lang}'"
+    # every full sentence, and every window of 2-3 consecutive short sentences, must be in `lang`
+    sents = [x.strip() for x in re.split(r"[.!?\n;:]+", clean) if _ALPHA_WORD.search(x)]
     off = []
-    for sent in re.split(r"[.!?\n;:]+", clean):
-        if len(_ALPHA_WORD.findall(sent)) >= MIN_WORDS_PER_SENTENCE:
-            p = detect_language_with_confidence(body=sent)
-            if p.language != lang and p.confidence >= SENTENCE_LANG_CONF:
-                off.append(sent.strip()[:60])
+    for i in range(len(sents)):
+        for j in range(i + 1, min(i + 4, len(sents) + 1)):
+            chunk = " ".join(sents[i:j])
+            if len(_ALPHA_WORD.findall(chunk)) >= MIN_WORDS_PER_SENTENCE:
+                p = detect_language_with_confidence(body=chunk)
+                if p.language != lang and p.confidence >= SENTENCE_LANG_CONF and chunk[:60] not in off:
+                    off.append(chunk[:60])
+                break
     if off:
         return False, f"sentences not in '{lang}': {off[:2]}"
     return True, f"reply and all full sentences are '{lang}' ({whole.confidence:.2f})"
@@ -409,9 +549,8 @@ def verify(draft: dict, retrieved: list[dict], ticket_text: str, lang: str) -> d
     answers = []
     for r in rows:
         text = normalize_placeholders(str(r.get("answer") or ""))
-        src_lang = str(r.get("language") or "").lower()
-        if src_lang not in ("en", "de"):
-            src_lang = detect_language_with_confidence(body=text).language if text.strip() else None
+        # language from the text, never the row's language column (wrong on ~9% of rows, see language.py)
+        src_lang = detect_language_with_confidence(body=text).language if text.strip() else None
         answers.append((text, src_lang))
     sources = [a for a, _ in answers] + [ticket_text]
 

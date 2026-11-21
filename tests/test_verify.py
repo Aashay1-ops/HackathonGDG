@@ -369,3 +369,161 @@ def test_leak_evidence_shows_the_whole_address():
     r = check("Please write to <email> or directly to billing@contoso.com for help [TKT-00001].",
               "Please write to <email> for help.")
     assert "billing@contoso.com" in next(f["detail"] for f in r["failures"] if f["check"] == "placeholders")
+
+
+# ================================================================ regressions from the second cold review
+A5 = "Refunds are processed within 5 business days."
+
+
+# 1-3 + extra: durations/amounts that carry no digit, sit away from their unit, use unusual forms, or come as ranges
+@pytest.mark.parametrize("reply,answer,lang,ticket", [
+    ("Refunds are processed within an hour after we confirm the return [TKT-00001].", A5, "en", "Refund please."),
+    ("Refunds are processed within a day after we confirm the return [TKT-00001].", A5, "en", "Refund please."),
+    ("You will receive half of the amount back within 5 business days [TKT-00001].", A5, "en", "Refund please."),
+    ("Die Rückerstattung erfolgt innerhalb einer halben Stunde auf Ihr Konto [TKT-00001].",
+     "Rückerstattungen dauern 5 Werktage.", "de", "Erstattung bitte."),
+    ("As an apology we will add two free months to your subscription today [TKT-00001].", A5, "en", "Refund please."),
+    ("As an apology we will add 2 free months to your subscription today [TKT-00001].", A5, "en",
+     "I ordered 3 weeks ago, did step 1 and 2."),
+    ("Als Entschädigung erstatten wir Ihnen zusätzlich 50,- € auf Ihr Konto [TKT-00001].",
+     "Rückerstattungen dauern 5 Werktage.", "de", "Bestellung 50 fehlt."),
+    ("Als Entschädigung erstatten wir Ihnen zusätzlich 50.- EUR auf Ihr Konto [TKT-00001].",
+     "Rückerstattungen dauern 5 Werktage.", "de", "Bestellung 50 fehlt."),
+    ("As a goodwill gesture you get 50 pounds credit on your account [TKT-00001].", "Order 50 was refunded.", "en", "Refund."),
+    ("Refunds are processed within 1 to 5 business days after we confirm [TKT-00001].", A5, "en", "Refund please."),
+    ("Refunds are processed within 2-5 business days after we confirm [TKT-00001].", A5, "en", "Refund please."),
+    ("Refunds take 5 business days and our hotline is open at 2 pm daily [TKT-00001].", A5, "en", "Refund please."),
+    ("Als Entschädigung erhalten Sie eine zweiwöchige Testphase für den Tarif [TKT-00001].",
+     "Rückerstattungen dauern 5 Werktage.", "de", "Erstattung bitte."),
+    ("Rückerstattungen werden innerhalb von 14-tägiger Frist nach Eingang bearbeitet [TKT-00001].",
+     "Rückerstattungen dauern 5 Werktage.", "de", "Erstattung bitte."),
+])
+def test_second_review_invented_quantities_fail(reply, answer, lang, ticket):
+    r = verify({"reply": reply, "cited_ids": ["TKT-00001"], "unsupported_asks": []}, one(answer), ticket, lang)
+    assert "numbers" in failed(r), r["checks"]
+
+
+def test_range_inside_the_source_passes():
+    r = check("Refunds are processed within 1 to 5 business days after we confirm [TKT-00001].",
+              "Refunds take 1 to 5 business days.")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+def test_article_duration_grounded_by_source_passes():
+    r = check("Refunds are processed within a day after we confirm the return [TKT-00001].",
+              "Refunds are processed within 1 day.")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+def test_half_grounded_by_fifty_percent_passes():
+    r = check("You will receive half of the amount back after the review [TKT-00001].",
+              "We refund 50% of the amount after review.")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# 4: links and contact addresses in other shapes
+@pytest.mark.parametrize("reply", [
+    "Please visit help.example-shop.com/refunds to track your refund status [TKT-00001].",
+    "Please write to refunds at example-shop dot com to track your refund [TKT-00001].",
+    "Please write to billing(at)contoso.com for help with the refund today [TKT-00001].",
+])
+def test_second_review_links_and_emails_fail(reply):
+    assert "placeholders" in failed(check(reply, A5))
+
+
+def test_quoted_bare_domain_passes():
+    r = check("You can track it on status.contoso.com at any time [TKT-00001].",
+              "Track refunds on status.contoso.com.")
+    assert "placeholders" not in failed(r), r["failures"]
+
+
+# 5: dates with month names
+@pytest.mark.parametrize("reply,answer,lang", [
+    ("The new plan will start on March 3, 2027 as described in the notes [TKT-00001].",
+     "The new plan will start on January 3, 2027.", "en"),
+    ("Der neue Tarif startet am 3. März 2027 wie in den Versionshinweisen beschrieben [TKT-00001].",
+     "Der neue Tarif startet am 3. Januar 2027.", "de"),
+])
+def test_wrong_month_name_date_fails(reply, answer, lang):
+    assert "numbers" in failed(check(reply, answer, lang))
+
+
+@pytest.mark.parametrize("reply,answer,lang", [
+    ("The new plan will start on January 3, 2027 as described in the notes [TKT-00001].",
+     "The new plan will start on 2027-01-03.", "en"),
+    ("Der neue Tarif startet am 3. Januar 2027 wie in den Versionshinweisen beschrieben [TKT-00001].",
+     "Der neue Tarif startet am 03.01.2027.", "de"),
+    ("The new plan will start on January 3 as described in the notes [TKT-00001].",
+     "The new plan will start on 2027-01-03.", "en"),
+])
+def test_month_name_date_matches_numeric_source(reply, answer, lang):
+    r = check(reply, answer, lang)
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# 6-8: realistic grounded replies that used to be blocked
+@pytest.mark.parametrize("reply,lang,ticket", [
+    ("Bitte warten Sie einige Minuten und setzen Sie dann das Passwort zurück [TKT-00001].", "de", "Passwort"),
+    ("Es sind keine weiteren Benutzer betroffen. Bitte setzen Sie das Passwort zurück [TKT-00001].", "de", "Passwort"),
+    ("Wenn ein Benutzer gesperrt ist, setzen Sie bitte das Passwort zurück [TKT-00001].", "de", "Passwort"),
+    ("Bitte installieren Sie den Client auf jedem einzelnen Gerät erneut [TKT-00001].", "de", "Passwort"),
+    ("This issue affects Windows 10 users after the latest update, please reset [TKT-00001].", "en",
+     "Since the update my Windows 10 laptop can't log in."),
+    ("The update fixes the login issue on iOS 17 devices, please reinstall the app [TKT-00001].", "en",
+     "Login fails on my iOS 17 phone."),
+    ("Das Problem betrifft Windows 11 Geräte nach dem Update, bitte neu anmelden [TKT-00001].", "de",
+     "Seit dem Update geht Windows 11 nicht."),
+    ("We have sent you a one-time password, please reset the password with it [TKT-00001].", "en", "Password"),
+])
+def test_second_review_false_blocks_pass(reply, lang, ticket):
+    r = verify({"reply": reply, "cited_ids": ["TKT-00001"], "unsupported_asks": []},
+               one("Bitte setzen Sie das Passwort zurück. Please reset the password."), ticket, lang)
+    assert "numbers" not in failed(r), r["failures"]
+
+
+def test_eines_tages_matches_one_day():
+    r = check("Wir melden uns innerhalb eines Tages bei Ihnen zurück, versprochen [TKT-00001].",
+              "Wir antworten innerhalb von 1 Tag.", "de")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+def test_version_without_context_is_still_a_quantity():
+    r = check("This issue affects Windows 12 users after the latest update [TKT-00001].", "Reset the password.")
+    assert "numbers" in failed(r)
+
+
+# 9: the source's language column is not trusted
+def test_mislabeled_source_language_is_ignored():
+    r = verify({"reply": "Ihr Tarif enthält 1.000 GB Speicher für alle Mitarbeiter im Team [TKT-00001].",
+                "cited_ids": ["TKT-00001"], "unsupported_asks": []},
+               [{"ticket_id": "TKT-00001", "answer": "Ihr Tarif enthält 1.000 GB Speicher.", "language": "en"}],
+               "Speicher?", "de")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# 10: an ambiguous slash date must match exactly
+@pytest.mark.parametrize("reply", ["Your contract ends on 02/01/2026 as stated in our records [TKT-00001].",
+                                   "Your contract ends on 01/02/2026 as stated in our records [TKT-00001]."])
+def test_ambiguous_slash_date_needs_exact_match(reply):
+    assert "numbers" in failed(check(reply, "Your contract ends on 2026-02-01."))
+
+
+def test_german_slash_date_is_day_first():
+    r = check("Ihr Vertrag endet am 01/02/2026 wie in unseren Unterlagen vermerkt [TKT-00001].",
+              "Your contract ends on 2026-02-01.", "de")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# 11: several short wrong-language sentences are caught together
+def test_short_wrong_language_sentences_fail():
+    r = check("Vielen Dank für Ihre Nachricht und Geduld. Your refund is approved now. We fixed your account "
+              "today. Please check it again. Mit freundlichen Grüßen [TKT-00001].", A5, "de")
+    assert "language" in failed(r)
+
+
+# worst-case inputs stay fast
+@pytest.mark.parametrize("reply", ["a" * 2999, "1 " * 1499, "1-" * 1499, "(617) 555-0199 " * 190])
+def test_worst_case_replies_are_fast(reply):
+    t = time.perf_counter()
+    verify({"reply": reply, "cited_ids": ["TKT-00001"], "unsupported_asks": []}, one(A5), "ticket", "en")
+    assert time.perf_counter() - t < 0.2
