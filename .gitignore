@@ -44,3 +44,4 @@ artifacts/
 .vscode/
 .idea/
 *.swp
+data/index/
