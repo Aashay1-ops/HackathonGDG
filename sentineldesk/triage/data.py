@@ -102,6 +102,47 @@ def calib_split(kb: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     return train, half_a, half_b
 
 
+def paraphrase_families(emb, threshold: float = 0.98, chunk: int = 2048):
+    """One family id per row: rows whose normalized embeddings have cosine >= threshold are
+    connected (data audit, Appendix A). Returns (family ids, top-1 neighbour similarity, top-1 neighbour row)."""
+    import numpy as np
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    n = len(emb)
+    rows, cols = [], []
+    top1, nn1 = np.empty(n, dtype=np.float32), np.empty(n, dtype=np.int64)
+    for s in range(0, n, chunk):
+        S = emb[s:s + chunk] @ emb.T
+        S[np.arange(len(S)), np.arange(s, s + len(S))] = -1.0  # ignore self
+        nn1[s:s + len(S)] = S.argmax(axis=1)
+        top1[s:s + len(S)] = S[np.arange(len(S)), nn1[s:s + len(S)]]
+        r, c = np.nonzero(S >= threshold)
+        keep = r + s < c
+        rows.append(r[keep] + s)
+        cols.append(c[keep])
+    r, c = np.concatenate(rows), np.concatenate(cols)
+    graph = coo_matrix((np.ones(len(r)), (r, c)), shape=(n, n))
+    return connected_components(graph, directed=False)[1], top1, nn1
+
+
+def family_calib_split(kb: pd.DataFrame, family) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Like calib_split (~90/5/5 of tickets: the 10%/50% cuts are of families, seed 42), but whole families stay on one side, so
+    calibration, ensemble weights and the critical threshold are tuned on tickets that have no
+    reworded copy in train (data audit #3; also fixes #4, because neighbour votes search train only)."""
+    from sklearn.model_selection import GroupShuffleSplit
+
+    kb = kb.reset_index(drop=True)
+    tr, cal = next(GroupShuffleSplit(n_splits=1, test_size=0.10, random_state=SEED).split(kb, groups=family))
+    a, b = next(GroupShuffleSplit(n_splits=1, test_size=0.5, random_state=SEED).split(cal, groups=family[cal]))
+    train, half_a, half_b = kb.iloc[tr], kb.iloc[cal[a]], kb.iloc[cal[b]]
+    for x, y in ((train, half_a), (train, half_b), (half_a, half_b)):
+        shared = set(family[x.index]) & set(family[y.index])
+        if shared:
+            raise AssertionError(f"{len(shared)} paraphrase families span two calibration parts")
+    return train, half_a, half_b
+
+
 def build_parts(csv_path: str | Path | None = None, sample: int | None = None) -> dict[str, pd.DataFrame]:
     """Team split via split.load_split, then triage calibration slices; in sample mode,
     subsample every part proportionally (seed 42)."""
