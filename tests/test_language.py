@@ -227,3 +227,40 @@ class TestMultiLanguageExtensibility:
         assert clean_df["detected_language"] == ["en", "de"]
         assert all(0.5 < c <= 1.0 for c in clean_df["language_confidence"])
 
+
+class TestSecurityHardening:
+    """Verify resilience against DoS, Unicode NFD bypass, character stuffing, and mutation."""
+
+    def test_unicode_nfd_decomposed_umlauts_are_detected(self) -> None:
+        # 'Störung' and 'Überprüfung' in decomposed NFD form (o + \u0308, U + \u0308)
+        nfd_subject = "Sto\u0308rung"
+        nfd_body = "U\u0308berpru\u0308fung fehlgeschlagen"
+        pred = detect_language_with_confidence(nfd_subject, nfd_body)
+        assert pred.language == "de"
+        assert pred.scores["de"] > 0
+
+    def test_character_stuffing_cannot_spoof_english_ticket(self) -> None:
+        # English ticket with 500 repeated German umlauts appended at the end
+        en_body = (
+            "Dear support team, we are unable to connect to the production portal "
+            "and we need your help to resolve this issue as soon as possible. "
+            "Please let us know what we should do next. " + ("ä" * 500)
+        )
+        pred = detect_language_with_confidence("Portal connection issue", en_body)
+        assert pred.language == "en"
+
+    def test_massive_payload_bounded_latency_no_dos(self) -> None:
+        # 2 MB adversarial payload should still complete in well under 5 ms
+        huge_body = ("Dear support team, please help us resolve this issue. " * 40_000)
+        t0 = time.perf_counter()
+        lang = detect_language("Help", huge_body)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        assert lang == "en"
+        assert elapsed_ms < 20.0, f"Expected < 20ms on 2MB payload, got {elapsed_ms:.2f}ms"
+
+    def test_profiles_view_is_immutable(self) -> None:
+        detector = LanguageDetector(profiles=[EN_PROFILE, DE_PROFILE])
+        with pytest.raises(TypeError):
+            detector.profiles["evil"] = EN_PROFILE  # type: ignore[index]
+
+

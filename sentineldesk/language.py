@@ -15,10 +15,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import re
+from types import MappingProxyType
 from typing import Iterable, Mapping, Optional, Sequence
+import unicodedata
 
 # Pre-compiled unicode word tokenizer supporting Latin + extended diacritics
 WORD_RE: re.Pattern[str] = re.compile(r"[a-zA-ZÀ-ÖØ-öø-ÿ]+")
+
+# Security guardrails:
+# - Cap scanned prefix to prevent memory/CPU DoS on massive payloads (CWE-400)
+# - Cap distinctive character contribution so repeated characters ("ääääää...")
+#   cannot spoof language detection on a long English ticket
+MAX_SCAN_CHARS: int = 4000
+MAX_CHAR_HITS: int = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +170,7 @@ class LanguageDetector:
     @property
     def profiles(self) -> Mapping[str, LanguageProfile]:
         """Read-only view of registered language profiles."""
-        return self._profiles
+        return MappingProxyType(self._profiles)
 
     def register_profile(self, profile: LanguageProfile) -> None:
         """Register or replace a LanguageProfile at runtime."""
@@ -173,9 +182,9 @@ class LanguageDetector:
         body: object = "",
     ) -> LanguagePrediction:
         """Detect language across all active profiles with calibrated confidence."""
-        subj_str = _safe_str(subject)
-        body_str = _safe_str(body)
-        text = f"{subj_str} {body_str}".strip()
+        subj_str = _safe_str(subject)[:MAX_SCAN_CHARS]
+        body_str = _safe_str(body)[:MAX_SCAN_CHARS]
+        text = f"{subj_str} {body_str}".strip()[:MAX_SCAN_CHARS]
 
         zero_scores = {code: 0 for code in self._profiles}
         if not text:
@@ -185,12 +194,18 @@ class LanguageDetector:
                 scores=zero_scores,
             )
 
+        # Normalize to NFC so decomposed Unicode (e.g. macOS NFD 'u' + '\u0308')
+        # matches precomposed characters ('ü') and does not split words.
+        text = unicodedata.normalize("NFC", text)
         lower_words = WORD_RE.findall(text.lower())
 
-        # Count distinctive characters per profile
+        # Count distinctive characters per profile (capped to prevent character-stuffing spoofing)
         char_counts: dict[str, int] = {
             code: (
-                sum(1 for ch in text if ch in prof.distinctive_chars)
+                min(
+                    MAX_CHAR_HITS,
+                    sum(1 for ch in text if ch in prof.distinctive_chars),
+                )
                 if prof.distinctive_chars
                 else 0
             )
