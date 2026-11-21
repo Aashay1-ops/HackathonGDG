@@ -5,12 +5,13 @@
 paths:
   artifacts_dir: artifacts
   results_dir: results
+  index_dir: data/index      # team's shared embedding index (README "Shared embeddings file")
 
 data:
   csv_path: data/tickets.csv   # what split.load_split reads; downloaded from the HF Hub if missing
 
 embedding:
-  model: intfloat/multilingual-e5-small     # or BAAI/bge-m3 (use a GPU)
+  model: intfloat/multilingual-e5-base      # team decision (README "Models (decided)"); e5-small = fast option
   prefixes:                                 # e5 needs "query: "; bge-m3 needs nothing
     intfloat/multilingual-e5-small: "query: "
     intfloat/multilingual-e5-base: "query: "

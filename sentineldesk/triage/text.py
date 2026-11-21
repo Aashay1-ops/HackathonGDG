@@ -1,4 +1,10 @@
-"""The one text builder used by training, evaluation and the live demo."""
+"""The one text builder used by training, evaluation and the live demo.
+
+It reproduces split.py's `text` column EXACTLY (subject + "\\n" + body, missing -> ""), because the
+team's shared embedding index (data/index/emb.npy) is built from that column: live tickets must be
+embedded from the same string or they silently stop matching the index. Unicode normalization
+(NFKC) is applied where it matters instead: keyword matching (keywords.py).
+"""
 from __future__ import annotations
 
 import math
@@ -16,12 +22,11 @@ def normalize(text: str) -> str:
 
 
 def build_text(subject, body) -> str:
-    """subject (may be None/NaN/empty) + body -> one NFKC-normalized string. Never returns "nan"."""
+    """subject (may be None/NaN/empty) + "\\n" + body, identical to split.py's `text`. Never "nan"."""
     s, b = _clean(subject), _clean(body)
-    text = normalize((s.strip() + "\n" + b.strip()).strip())
-    if not text:
+    if not (s.strip() or b.strip()):
         raise ValueError("Ticket has no subject and no body")
-    return text
+    return s + "\n" + b
 
 
 def build_texts(subjects, bodies) -> list[str]:
