@@ -1,14 +1,21 @@
-"""Unit and benchmark tests for SentinelDesk language detection (`en` vs `de`)."""
+"""Unit, extensibility, and benchmark tests for SentinelDesk language detection."""
 
 from __future__ import annotations
 
 import math
+import re
 import time
 
 import pytest
 
 from sentineldesk.language import (
+    DE_PROFILE,
+    EN_PROFILE,
+    ES_PROFILE,
+    FR_PROFILE,
+    LanguageDetector,
     LanguagePrediction,
+    LanguageProfile,
     detect_language,
     detect_language_batch,
     detect_language_with_confidence,
@@ -105,13 +112,11 @@ class TestLanguageDetectionCore:
         assert pred.confidence >= 0.7
 
     def test_morphological_suffix_tie_breaker(self) -> None:
-        # No stopwords or umlauts, only German morphological suffixes (-ung, -keit)
         pred_de = detect_language_with_confidence(
             "Systemaktualisierung", "Verfügbarkeitsprüfung fehlgeschlagen"
         )
         assert pred_de.language == "de"
 
-        # No stopwords, only English morphological suffixes (-tion, -ment, -ing)
         pred_en = detect_language_with_confidence(
             "Configuration", "Deployment processing failed"
         )
@@ -141,3 +146,65 @@ class TestLanguageDetectionCore:
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         avg_ms = elapsed_ms / n_iters
         assert avg_ms < 0.1, f"Expected < 0.1ms per ticket, got {avg_ms:.4f}ms"
+
+
+class TestMultiLanguageExtensibility:
+    """Verify that new languages (e.g., French, Spanish, Italian) can be plugged in easily."""
+
+    def test_builtin_four_language_detector(self) -> None:
+        detector = LanguageDetector(
+            profiles=[EN_PROFILE, DE_PROFILE, FR_PROFILE, ES_PROFILE]
+        )
+        assert detector.supported_languages == ("en", "de", "fr", "es")
+
+        assert (
+            detector.detect(
+                "Problème de connexion",
+                "Bonjour, nous avons un problème avec notre compte depuis ce matin. Merci pour votre aide.",
+            )
+            == "fr"
+        )
+        assert (
+            detector.detect(
+                "Error de acceso al sistema",
+                "Hola equipo de soporte, tenemos un problema con nuestra cuenta. Muchas gracias por su ayuda.",
+            )
+            == "es"
+        )
+        assert (
+            detector.detect(
+                "Systemausfall",
+                "Sehr geehrtes Team, wir haben keinen Zugriff auf das Konto.",
+            )
+            == "de"
+        )
+        assert (
+            detector.detect(
+                "Account access issue",
+                "Dear support team, we are unable to access our account since this morning.",
+            )
+            == "en"
+        )
+
+    def test_dynamic_custom_profile_registration(self) -> None:
+        detector = LanguageDetector(profiles=[EN_PROFILE, DE_PROFILE])
+        it_profile = LanguageProfile(
+            code="it",
+            name="Italian",
+            distinctive_chars=frozenset("àèéìòù"),
+            stopwords=frozenset({
+                "il", "lo", "gli", "della", "nella", "sono", "siamo", "abbiamo",
+                "buongiorno", "grazie", "problema", "nostro", "sistema", "assistenza",
+            }),
+            suffix_pattern=re.compile(r"(?:zione|zioni|mento|menti)$"),
+        )
+        detector.register_profile(it_profile)
+        assert "it" in detector.supported_languages
+
+        pred = detector.detect_with_confidence(
+            "Problema con il sistema",
+            "Buongiorno, abbiamo un problema nella configurazione della nostra assistenza. Grazie.",
+        )
+        assert pred.language == "it"
+        assert pred.scores["it"] > pred.scores["en"]
+        assert pred.scores["it"] > pred.scores["de"]
