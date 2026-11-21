@@ -59,9 +59,12 @@ class LanguagePrediction:
 
 
 # ---------------------------------------------------------------------------
-# Built-in Default Profiles (English & German) + Optional Extended Profiles
+# Built-in Profiles (English & German)
 # ---------------------------------------------------------------------------
 
+# Note: Words that German IT tickets commonly borrow as loanwords
+# ('account', 'system', 'error', 'errors', 'access', 'update', 'updated',
+#  'support', 'customer', 'team') are deliberately excluded from EN_PROFILE.
 EN_PROFILE = LanguageProfile(
     code="en",
     name="English",
@@ -69,16 +72,15 @@ EN_PROFILE = LanguageProfile(
     stopwords=frozenset({
         "the", "and", "to", "of", "is", "for", "with", "on", "that", "this",
         "we", "you", "are", "have", "not", "please", "dear", "thank", "thanks",
-        "issue", "issues", "support", "our", "your", "can", "could", "would",
+        "issue", "issues", "our", "your", "can", "could", "would",
         "should", "will", "hello", "hi", "from", "by", "at", "be", "been", "being",
         "as", "an", "a", "was", "were", "has", "had", "but", "or", "if", "my",
         "me", "it", "its", "about", "which", "when", "where", "who", "what", "how",
         "all", "there", "their", "they", "them", "need", "help", "regards",
-        "sincerely", "account", "system", "request", "unable", "error", "errors",
-        "working", "access", "currently", "experiencing", "following", "provide",
-        "assistance", "resolve", "resolved", "update", "updated", "using", "used",
-        "customer", "team", "report", "reporting", "affecting", "since",
-        "during", "after", "before", "into", "out", "up", "down", "over", "under",
+        "sincerely", "request", "unable", "working", "currently", "experiencing",
+        "following", "provide", "assistance", "resolve", "resolved", "using", "used",
+        "report", "reporting", "affecting", "since", "during", "after", "before",
+        "into", "out", "up", "down", "over", "under",
     }),
     suffix_pattern=re.compile(
         r"(?:tion|tions|ment|ments|ing|ed|ly|ness|able|ible)$"
@@ -106,45 +108,16 @@ DE_PROFILE = LanguageProfile(
         "melden", "gemeldet", "festgestellt", "aktuell", "derzeit", "folgende",
         "unterstützung", "abteilung", "zugriff", "störung", "ausfall", "ausgefallen",
         "funktioniert", "konto", "passwort", "rechnung", "zahlung", "kunde", "kunden",
+        "gesperrt", "zeigt",
     }),
     suffix_pattern=re.compile(
         r"(?:ung|ungen|keit|heit|lich|ische|ischen|ischer|ischem|iert|ieren)$"
     ),
 )
 
-# Pre-packaged optional profiles for instant future expansion (French, Spanish)
-FR_PROFILE = LanguageProfile(
-    code="fr",
-    name="French",
-    distinctive_chars=frozenset("éèêëàâùûçœæÉÈÊËÀÂÙÛÇŒÆ"),
-    stopwords=frozenset({
-        "je", "nous", "vous", "les", "des", "une", "est", "sont", "pour", "dans",
-        "avec", "sur", "pas", "plus", "mais", "comme", "tout", "Bonjour", "bonjour",
-        "merci", "problème", "compte", "depuis", "notre", "votre", "cette", "être",
-        "avoir", "faire", "aide", "équipe", "cordialement", "erreur", "accès",
-    }),
-    suffix_pattern=re.compile(r"(?:issement|atrice|ateur|euse|eux|oir|oire)$"),
-)
-
-ES_PROFILE = LanguageProfile(
-    code="es",
-    name="Spanish",
-    distinctive_chars=frozenset("ñáéíóúüÑÁÉÍÓÚÜ¿¡"),
-    stopwords=frozenset({
-        "el", "la", "los", "las", "una", "unos", "unas", "por", "para", "con",
-        "sin", "sobre", "entre", "hasta", "desde", "está", "están", "somos",
-        "tenemos", "hola", "gracias", "favor", "problema", "cuenta", "equipo",
-        "soporte", "ayuda", "saludos", "error", "acceso", "sistema", "nuestro",
-        "nuestra", "puede", "puedo", "hacer", "cuando", "como", "pero", "más",
-    }),
-    suffix_pattern=re.compile(r"(?:ción|ciones|miento|mientos|ando|iendo|dad)$"),
-)
-
 BUILTIN_PROFILES: dict[str, LanguageProfile] = {
     "en": EN_PROFILE,
     "de": DE_PROFILE,
-    "fr": FR_PROFILE,
-    "es": ES_PROFILE,
 }
 
 

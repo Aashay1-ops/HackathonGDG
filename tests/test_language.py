@@ -11,8 +11,6 @@ import pytest
 from sentineldesk.language import (
     DE_PROFILE,
     EN_PROFILE,
-    ES_PROFILE,
-    FR_PROFILE,
     LanguageDetector,
     LanguagePrediction,
     LanguageProfile,
@@ -72,6 +70,16 @@ class TestLanguageDetectionCore:
             (
                 "Störung",
                 "Server ausgefallen",
+                "de",
+            ),
+            (
+                "",
+                "Mein Account ist gesperrt, das System zeigt Error 500",
+                "de",
+            ),
+            (
+                "Support Team Update",
+                "Mein Customer Account hat keinen Access auf das System.",
                 "de",
             ),
         ],
@@ -150,42 +158,7 @@ class TestLanguageDetectionCore:
 
 
 class TestMultiLanguageExtensibility:
-    """Verify that new languages (e.g., French, Spanish, Italian) can be plugged in easily."""
-
-    def test_builtin_four_language_detector(self) -> None:
-        detector = LanguageDetector(
-            profiles=[EN_PROFILE, DE_PROFILE, FR_PROFILE, ES_PROFILE]
-        )
-        assert detector.supported_languages == ("en", "de", "fr", "es")
-
-        assert (
-            detector.detect(
-                "Problème de connexion",
-                "Bonjour, nous avons un problème avec notre compte depuis ce matin. Merci pour votre aide.",
-            )
-            == "fr"
-        )
-        assert (
-            detector.detect(
-                "Error de acceso al sistema",
-                "Hola equipo de soporte, tenemos un problema con nuestra cuenta. Muchas gracias por su ayuda.",
-            )
-            == "es"
-        )
-        assert (
-            detector.detect(
-                "Systemausfall",
-                "Sehr geehrtes Team, wir haben keinen Zugriff auf das Konto.",
-            )
-            == "de"
-        )
-        assert (
-            detector.detect(
-                "Account access issue",
-                "Dear support team, we are unable to access our account since this morning.",
-            )
-            == "en"
-        )
+    """Verify that new languages can be plugged in dynamically via LanguageProfile."""
 
     def test_dynamic_custom_profile_registration(self) -> None:
         detector = LanguageDetector(profiles=[EN_PROFILE, DE_PROFILE])

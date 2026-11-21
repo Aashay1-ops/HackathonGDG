@@ -165,35 +165,7 @@ df = annotate_dataframe_language(df)
 
 ## 5. Extensibility: How to add more languages in the future
 
-We built this module around **Language Profiles (`LanguageProfile`)** so nothing is hardcoded to just English and German. You can add new languages without touching the core scoring engine.
-
-### Option 1: Enable built-in French (`fr`) and Spanish (`es`)
-French and Spanish profiles are already included out-of-the-box:
-
-```python
-from sentineldesk import (
-    DE_PROFILE,
-    EN_PROFILE,
-    ES_PROFILE,
-    FR_PROFILE,
-    LanguageDetector,
-)
-
-# Create a detector that supports 4 languages (en, de, fr, es)
-detector = LanguageDetector(
-    profiles=[EN_PROFILE, DE_PROFILE, FR_PROFILE, ES_PROFILE]
-)
-
-print(
-    detector.detect(
-        "Problème de compte", "Bonjour, merci pour votre aide avec notre compte."
-    )
-)
-# -> 'fr'
-```
-
-### Option 2: Register any brand-new language at runtime (e.g., Italian `it`)
-Create a `LanguageProfile` with common words and special characters, then call `register_profile()`:
+We built this module around **Language Profiles (`LanguageProfile`)** so nothing is hardcoded to just English and German. You can register any new language at runtime without touching the core scoring engine:
 
 ```python
 import re
