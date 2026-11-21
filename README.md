@@ -47,7 +47,7 @@ Steps ①–③ are decided. Everything else is still open (see [Open decisions]
 │  ③ SAFETY CHECK: is it OK for AI to answer?   │
 │                                                │
 │   Escalate to a human if ANY is true:          │
-│   ✗ urgent outage (high-priority Incident)     │
+│   ✗ urgent outage (critical score is high)     │
 │   ✗ system isn't confident in its triage       │
 │   ✗ no similar past ticket exists              │
 │   ✗ customer asks for something we've never    │
@@ -67,11 +67,16 @@ We use classical ML where results must be measurable, rules where we can't affor
  Ticket (subject?, body)
         │
         ▼
- ① TRIAGE
-   ├─ ML: multilingual embeddings → LogReg ×3 (type / queue / priority)
-   │      + CalibratedClassifierCV → calibrated confidence
-   └─ Rules: outage keywords in en+de ("down", "ausgefallen", "kein Zugriff", ...)
-          → force priority=high, type=Incident   (protects high-priority Incident recall)
+ ① TRIAGE  (details in "Triage in detail" below)
+   ├─ Ticket text → embedded once (shared with retrieval) + TF-IDF once
+   ├─ Three models, each gives probabilities for type / queue / priority:
+   │    (0) multilingual embeddings → LogReg ×3
+   │    (1) TF-IDF (word + character n-grams) → LogReg ×3
+   │    (2) neighbour votes: labels of the top-20 most similar past tickets
+   ├─ (6) Ensemble: small LogReg combines (0) + (1) + (2) → calibrated confidence
+   └─ (5) Critical detector: embeddings + outage-keyword flag (en + de)
+          → score = how likely this is a high-priority Incident
+          → feeds the gate; it does NOT overwrite the predicted labels
         │
         ▼
  ② RETRIEVAL (hybrid search)
@@ -81,7 +86,7 @@ We use classical ML where results must be measurable, rules where we can't affor
         │
         ▼
  ③ GATE (deterministic rules, each with a reason string)
-   high-priority Incident │ low confidence │ low similarity │ unsupported ask
+   critical score │ low confidence │ low similarity │ unsupported ask
         │                                         │
      escalate                                   safe
         │                                         ▼
@@ -103,31 +108,73 @@ We use classical ML where results must be measurable, rules where we can't affor
 - **The LLM does not do triage.** LLM confidence scores aren't calibrated, and LLM calls would make the holdout evaluation (about 5.7k tickets) slow, rate-limited and non-deterministic.
 - **The UI shows the dense cosine similarity** and the "no precedent" threshold uses it. The RRF score is only used to order results, because it is not a similarity.
 - **Fit everything on the 80% split only:** BM25 IDF statistics, the embedding index, the classifiers and calibration.
-- **Build the outage keyword list from the 80% split** (its `Outage`/`Disruption` tags) and from common sense. Never tune it by looking at holdout errors.
-- **Report two sets of metrics:** "ML only" and "ML + rules" (Macro-F1 and high-priority Incident recall). The rules raise recall and may cost some precision, and we show that trade-off on purpose.
+- **Build the outage keyword list from the 80% split** (its `Outage`/`Disruption` tags) and from common sense. Never tune it by looking at holdout errors. The list is an input to the critical detector, not a rule that changes labels.
+- **Keyword matches never overwrite predicted labels.** The holdout labels are noisy, so forcing labels would lower Macro-F1. Outages are handled by escalation instead.
+- **Report two sets of metrics:**
+  - Macro-F1 for "current model only (0)" vs "full triage (0 + 1 + 2 + 6)".
+  - High-priority Incident recall and precision for "predicted labels only" vs "with critical detector (5)".
+
+  The detector raises recall and may cost some precision, and we show that trade-off on purpose.
 - **Mask PII before any external LLM call** (bonus): emails, phone numbers, IPs and account numbers.
 
-## RAG plan
+## Triage in detail (options 0, 1, 2, 5, 6)
 
-**Knowledge base:** one entry per past ticket from the 80% split: `ticket_id`, subject + body, answer, language, type, queue, priority, tags. Rows with an empty answer are dropped.
+We keep the original idea (embeddings + logistic regression) as the base and add four pieces around it.
 
-**What we search on:** subject + body. Answers are not searchable, because we match on the customer's problem, not on how an agent phrased the fix.
+| # | Piece | What it adds |
+|---|---|---|
+| 0 | Embeddings + LogReg (original idea) | Understands meaning, works across German and English |
+| 1 | TF-IDF + LogReg | Catches exact words: product names, error codes |
+| 2 | Neighbour votes | "8 of 10 similar tickets went to Billing": no training needed, and gives an explanation for the UI |
+| 6 | Ensemble + calibration | Combines 0, 1 and 2; models check each other, so confidence is more honest |
+| 5 | Critical detector | Targets high-priority Incident recall with a threshold we can set; replaces the old keyword overrides |
 
-**Using categories.** A new ticket arrives with no category, only our classifier's prediction (type is right about 87% of the time, queue only about 50%), so:
-- ✅ **Soft boost (default).** After searching, move up past tickets whose type/queue matches the prediction, by an amount scaled by the classifier's confidence. A low-confidence guess barely changes anything.
-- ✅ **Categories go to the LLM.** Each precedent is passed with its queue/type so the LLM can judge how relevant it is.
-- 🧪 **Experiment:** add tags/categories to the past tickets' searchable text (helps keyword search). Keep it only if it measurably helps.
-- ❌ **No hard filter by predicted queue.** It would hide the right match about half the time.
+**At prediction time:** the ticket is embedded once and turned into TF-IDF once. Models 0, 1 and 2 each give probabilities, and the ensemble (6) turns them into one calibrated answer per task. The critical detector (5) gives a separate score. In the gate:
 
-**Pipeline order:** classify, then search (so the boost can use the predictions), then the safety check.
+- the critical score decides "escalate to on-call",
+- the ensemble confidence decides "low confidence",
+- the retrieval cosine similarity decides "no precedent".
 
-**How we evaluate retrieval:**
-- Self-retrieval: a past ticket searched by its own text must come back first.
-- How often the top 5 share the holdout ticket's type and queue. This is only a sanity check, because the boost inflates it by design.
-- Hand-check about 20 holdout tickets: is the top answer actually useful?
-- Cross-lingual hit rate, and search latency p50/p95.
+### Training, in order
 
-**Handoff to the LLM:** `[{ticket_id, similarity, language, type, queue, answer}]`, top 5.
+1. **Split the 80% data:** 90% training part, 10% calibration slice. Cut the slice into two halves, **A** and **B** (about 1,100 tickets each). Use `random_state=42` everywhere.
+2. **Compute embeddings once** for the whole 80% split and save them. Retrieval, model 0, neighbour votes and the critical detector all reuse them.
+3. **Train models 0 and 1 on the training part.** Neighbour votes (2) need no training; they search the training part.
+4. **Train the ensemble (6) on half A,** using the outputs of models 0, 1 and 2 on half-A tickets.
+5. **Calibrate the ensemble on half B** and draw the reliability chart.
+6. **Train the critical detector (5) on the training part** (embeddings + outage-keyword flag). Tune its threshold on half B to catch at least 90% of high-priority Incidents.
+7. **Run the holdout once,** at the very end, for the final numbers.
+
+### Two mistakes to avoid
+
+- **Don't train the ensemble on the training part.** Models 0 and 1 have already seen those tickets and would look over-confident.
+- **Don't let a ticket vote for itself.** For half-A tickets, neighbour votes search only the training part. Add a check that a ticket never appears in its own neighbour list.
+
+### Build order and fallback
+
+Build in this order, so stopping early still leaves something useful:
+
+1. Critical detector (5): ~20–30 min of building
+2. TF-IDF model (1): ~20–30 min
+3. Neighbour votes (2): ~30 min, by the retrieval owner
+4. Ensemble + calibration (6): ~45–60 min
+
+If we're behind at the 3:30 checkpoint, drop the ensemble and keep model 0 + the critical detector.
+
+**Shared format:** every model returns probabilities per task in the same, fixed label order. Agree on this at the first checkpoint.
+
+### Training time on Google Colab (free T4 GPU)
+
+| Step | Runs on | Time |
+|---|---|---|
+| Setup (packages, data, model download) | — | ~3–6 min |
+| Embeddings for ~28.6k tickets | GPU | ~4–8 min (bge-m3) / ~1–2 min (e5-small) |
+| Model 0 | CPU | ~2–5 min |
+| Model 1 (TF-IDF) | CPU | ~5–12 min |
+| Models 2, 5, 6 | CPU | under 1 min each |
+| **Total** | | **~15–30 min (bge-m3) / ~10–20 min (e5-small)** |
+
+These are estimates. Save embeddings and models to Google Drive so a disconnect doesn't mean re-embedding. Train in Colab, then run the demo on a laptop from the saved files.
 
 ## Required deliverables (from the problem statement)
 
@@ -153,6 +200,9 @@ We use classical ML where results must be measurable, rules where we can't affor
 - Use one fixed split for everything: shuffle with `random_state=42`, first 80% = knowledge base + training data, last 20% = holdout.
 - Never index or read the holdout split's `answer`, `type`, `queue` or `priority`, except to score predictions at the very end.
 - Fit everything (vectorizers, models, the search index) on the 80% split only.
+- Tune calibration and every threshold on the calibration slice (halves A and B), never on the holdout.
+- Tags (`tag_1`…`tag_8`) are only used to build the outage keyword list, never as model features.
+- Neighbour votes never include the ticket itself.
 
 ## Open decisions
 
@@ -160,11 +210,11 @@ We use classical ML where results must be measurable, rules where we can't affor
 |---|---|---|---|
 | LLM for drafting | Gemini (check the hackathon benefits page) / other | | |
 | Embedding model | multilingual-e5 / bge-m3 / TF-IDF | | |
-| Classifier | embeddings + logistic regression / fine-tuned transformer | | ✅ embeddings + LogReg + calibration, plus outage rules |
+| Classifier | embeddings + logistic regression / TF-IDF / neighbour votes / ensemble / fine-tuned transformer | | ✅ ensemble of (0) embeddings + LogReg, (1) TF-IDF + LogReg and (2) neighbour votes, combined and calibrated by (6); (5) critical detector replaces the keyword overrides. See [Triage in detail](#triage-in-detail-options-0-1-2-5-6) |
 | Retrieval | dense only / hybrid | | ✅ hybrid: BM25 + dense, fused with RRF |
 | Vector store | FAISS / Chroma / numpy | | |
 | UI | Streamlit / Gradio / other | | |
 | What happens after "Escalate" | | | |
 | What the AI draft must contain | | | |
-| Confidence and similarity thresholds | | | |
+| Confidence and similarity thresholds | | | Critical threshold: catch ≥ 90% of high-priority Incidents, tuned on half B. Confidence threshold: tuned on half B. Similarity threshold: still open |
 | Team roles (5 people) | | | |
