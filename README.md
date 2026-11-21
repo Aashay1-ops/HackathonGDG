@@ -176,6 +176,37 @@ If we're behind at the 3:30 checkpoint, drop the ensemble and keep model 0 + the
 
 These are estimates. Save embeddings and models to Google Drive so a disconnect doesn't mean re-embedding. Train in Colab, then run the demo on a laptop from the saved files.
 
+## RAG plan
+
+**Knowledge base:** one entry per past ticket from the 80% split: `ticket_id`, subject + body, answer, language, type, queue, priority, tags.
+- **Drop junk answers:** empty ones, ones under about 40 characters, and ones that are only placeholders (for example "Den Fall prüfen, `<tel_num>` anrufen…"). They give the LLM nothing to ground on.
+
+**What we search on:** subject + body. Answers are not searchable, because we match on the customer's problem, not on how an agent phrased the fix.
+
+**PII mask first:** every query goes through `pii.mask()` before it is embedded or searched. KB text already uses `<email>`, `<tel_num>` and `<acc_num>` placeholders, so a masked query looks like KB text, while a raw email address would only add noise.
+
+**Using categories.** A new ticket arrives with no category, only our classifier's prediction (type is right about 87% of the time, queue only about 50%), so:
+- ✅ **Soft boost (default).** After searching, move up past tickets whose type/queue matches the prediction, by an amount scaled by the classifier's confidence. A low-confidence guess barely changes anything.
+- ✅ **Same-language boost.** A small boost for past tickets in the query's language. Other-language tickets stay eligible, so a German ticket can still use English precedents (cross-lingual bonus).
+- ✅ **Categories go to the LLM.** Each precedent is passed with its queue/type so the LLM can judge how relevant it is.
+- 🧪 **Experiment:** add tags/categories to the past tickets' searchable text (helps keyword search). Keep it only if it measurably helps.
+- ❌ **No hard filter by predicted queue.** It would hide the right match about half the time.
+
+**Remove near-duplicate results:** if two of the top 5 have almost identical answers (cosine > 0.95), keep the higher-ranked one and take the next result instead.
+
+**"No precedent" threshold σ:** if the top result's dense cosine similarity is below σ, escalate. Pick σ on a slice of the 80% split, as the gap between in-domain tickets and off-topic probes (recipes, sports, prompt injection, in en and de). Use one σ for both languages unless the data shows they differ. **σ depends on the embedding model** (e5 scores cluster high, bge-m3 is more spread out), so re-pick it if the model changes.
+
+**Pipeline order:** mask PII, then classify, then search (so the boost can use the predictions), then the safety check.
+
+**How we evaluate retrieval (on a slice of the 80% split, never the holdout):**
+- Self-retrieval: a past ticket searched by its own text must come back first.
+- How often the top 5 share the query ticket's type and queue. This is only a sanity check, because the boost inflates it by design.
+- Cross-lingual: translate some KB tickets into the other language, search with the translation, and check that the original comes back.
+- Hand-check about 20 tickets: is the top answer actually useful?
+- Search latency p50/p95.
+
+**Handoff to the LLM:** `[{ticket_id, similarity, language, type, queue, answer}]`, top 5.
+
 ## Required deliverables (from the problem statement)
 
 - [ ] **Triage:** predict type, queue and priority, each with a confidence score
