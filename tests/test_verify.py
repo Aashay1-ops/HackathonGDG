@@ -527,3 +527,154 @@ def test_worst_case_replies_are_fast(reply):
     t = time.perf_counter()
     verify({"reply": reply, "cited_ids": ["TKT-00001"], "unsupported_asks": []}, one(A5), "ticket", "en")
     assert time.perf_counter() - t < 0.2
+
+
+# ================================================================ regressions from the third cold review
+EN_SRC = "Refunds of €20 are processed within 5 business days."
+DE_SRC = "Rückerstattungen von 20 € werden innerhalb von 5 Werktagen bearbeitet."
+
+
+# H1: magnitudes
+@pytest.mark.parametrize("reply,answer,lang", [
+    ("We will process your refund of €20k within 5 business days [TKT-00001].", EN_SRC, "en"),
+    ("We will process your refund of €20 million within 5 business days [TKT-00001].", EN_SRC, "en"),
+    ("We will process your refund of €20m within 5 business days [TKT-00001].", EN_SRC, "en"),
+    ("Wir erstatten Ihnen €20 Mio. innerhalb von 5 Werktagen zurück [TKT-00001].", DE_SRC, "de"),
+    ("Wir erstatten Ihnen zwanzig Millionen Euro innerhalb von 5 Werktagen [TKT-00001].", DE_SRC, "de"),
+    ("Wir erstatten Ihnen 20 Tausend Euro innerhalb von 5 Werktagen zurück [TKT-00001].", DE_SRC, "de"),
+    ("We will process your refund of 2 thousand euros within 5 business days [TKT-00001].", EN_SRC, "en"),
+])
+def test_magnitude_suffixes_are_read(reply, answer, lang):
+    assert "numbers" in failed(check(reply, answer, lang))
+
+
+def test_magnitude_grounded_by_same_magnitude():
+    r = check("The plan includes credits worth €20k per year for your team [TKT-00001].",
+              "The plan includes credits worth €20,000 per year.")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# H2: billing period is part of the amount
+@pytest.mark.parametrize("reply,lang", [
+    ("The Pro plan costs €20 per month and includes 5 users for you [TKT-00001].", "en"),
+    ("The Pro plan costs €20 monthly and includes 5 users for you [TKT-00001].", "en"),
+    ("The Pro plan costs €20 per user and includes 5 users for you [TKT-00001].", "en"),
+    ("The Pro plan costs €20 a month and includes 5 users for you [TKT-00001].", "en"),
+])
+def test_wrong_billing_period_fails(reply, lang):
+    assert "numbers" in failed(check(reply, "The Pro plan costs €20 per year and includes 5 users.", lang))
+
+
+def test_german_billing_period_fails_and_matches():
+    src = "Der Pro-Tarif kostet 20 € pro Jahr und umfasst 5 Benutzer."
+    assert "numbers" in failed(check("Der Pro-Tarif kostet 20 € pro Monat und umfasst 5 Benutzer [TKT-00001].", src, "de"))
+    r = check("Der Pro-Tarif kostet 20 € jährlich und umfasst 5 Benutzer für Sie [TKT-00001].", src, "de")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# H3 / H4: countable things outside the old unit list, and spelled-out fractions
+@pytest.mark.parametrize("reply,answer,lang", [
+    ("Refunds take 5 business days and we waive your fee for two billing cycles [TKT-00001].", EN_SRC, "en"),
+    ("Refunds take 5 business days and support is open three weekends per year [TKT-00001].", EN_SRC, "en"),
+    ("Refunds are processed within a fortnight after we confirm the return [TKT-00001].", EN_SRC, "en"),
+    ("Refunds are processed within one and a half hours after we confirm it [TKT-00001].",
+     EN_SRC + " A reset takes half an hour.", "en"),
+    ("Die Rückerstattung erfolgt innerhalb von zweieinhalb Tagen auf Ihr Konto [TKT-00001].", DE_SRC, "de"),
+    ("Die Rückerstattung erfolgt innerhalb von anderthalb Stunden auf Ihr Konto [TKT-00001].", DE_SRC, "de"),
+    ("Die Rückerstattung erfolgt innerhalb von eineinhalb Wochen auf Ihr Konto [TKT-00001].", DE_SRC, "de"),
+    ("Die Rückerstattung erfolgt innerhalb einer Viertelstunde auf Ihr Konto zurück [TKT-00001].", DE_SRC, "de"),
+    ("Die Rückerstattung erfolgt innerhalb eines Werktages auf Ihr Konto zurück [TKT-00001].", DE_SRC, "de"),
+    ("Die Rückerstattung erfolgt innerhalb von drei Geschäftstagen auf Ihr Konto [TKT-00001].", DE_SRC, "de"),
+    ("Refunds take 5 business days and the new storage is tenfold larger [TKT-00001].", EN_SRC, "en"),
+])
+def test_third_review_invented_quantities_fail(reply, answer, lang):
+    assert "numbers" in failed(check(reply, answer, lang))
+
+
+def test_one_and_a_half_matches_source():
+    r = check("Refunds are processed within one and a half hours after we confirm it [TKT-00001].",
+              "Refunds are processed within 1.5 hours.")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# H5 / H6 / L1: links and spelled-out emails
+@pytest.mark.parametrize("reply", [
+    "Please reset it at help.refundcenter.ai/reset now, then wait [TKT-00001].",
+    "Please reset it at secure-login.ru now, then wait for the email [TKT-00001].",
+    "Please reset it at hilfe.bücher.de now, then wait for the email [TKT-00001].",
+    "Please reset it at pаypal.com/login now, then wait for the email [TKT-00001].",
+    "Please reset it at example.co now, then wait for the confirmation [TKT-00001].",
+    "Please reset it at https://example.com/he now, then wait for it [TKT-00001].",
+    "Please write to refunds {at} shop {dot} com for the refund status [TKT-00001].",
+])
+def test_third_review_links_fail(reply):
+    r = check(reply, "Reset it at https://example.com/help within 5 business days.")
+    assert "placeholders" in failed(r)
+
+
+@pytest.mark.parametrize("reply", [
+    "Please reset it at https://example.com/help now, then wait for it [TKT-00001].",
+    "Please reset it on example.com now, then wait for the confirmation [TKT-00001].",
+    "Please send us the setup.log and the config.yaml from the client [TKT-00001].",
+])
+def test_quoted_links_and_file_names_pass(reply):
+    r = check(reply, "Reset it at https://example.com/help within 5 business days.")
+    assert "placeholders" not in failed(r), r["failures"]
+
+
+# H7: ticket numbers can't become promised amounts; IDs still pass
+def test_bare_amount_after_money_word_needs_a_source():
+    r = check("We will process your refund of 500 within 5 business days for you [TKT-00001].", EN_SRC,
+              ticket="I was charged 500 twice, please refund.")
+    assert "numbers" in failed(r)
+
+
+@pytest.mark.parametrize("reply", [
+    "We have processed the refund for order 12345 within 5 business days [TKT-00001].",
+    "We have credited invoice no. 4711 within 5 business days as promised [TKT-00001].",
+])
+def test_ids_after_money_words_stay_plain(reply):
+    r = check(reply, EN_SRC, ticket="Order 12345 and invoice no. 4711 were charged twice.")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+def test_three_word_gap_unit_from_ticket_number_fails():
+    r = check("We add 30 additional premium support days to your plan today [TKT-00001].", EN_SRC,
+              ticket="Error 30 appears when I log in.")
+    assert "numbers" in failed(r)
+
+
+# H8: numbers must come from the tickets the draft cites
+def test_number_from_uncited_retrieved_row_fails():
+    rows = [{"ticket_id": "TKT-00001", "answer": EN_SRC},
+            {"ticket_id": "TKT-00002", "answer": "Enterprise plans cost €500 per year."}]
+    r = verify({"reply": "We will process your refund of €500 within 5 business days [TKT-00001].",
+                "cited_ids": ["TKT-00001"], "unsupported_asks": []}, rows, "Refund please.", "en")
+    assert "numbers" in failed(r)
+
+
+# M1: long tickets and sources stay fast
+@pytest.mark.parametrize("ticket", ["1.1.1." * 2000, "12,34," * 1000, "1,1," * 3000, "1.1.1." * 8000])
+def test_long_number_runs_in_ticket_are_fast(ticket):
+    t = time.perf_counter()
+    check("We will process your refund of €20 within 5 business days [TKT-00001].", EN_SRC, ticket=ticket)
+    assert time.perf_counter() - t < 1.0
+
+
+# M2: a word that merely contains a unit is not a unit
+def test_today_is_not_a_day_count():
+    r = check("Your replacement order 48213 ships today, within 5 business days at most [TKT-00001].", EN_SRC,
+              ticket="Order 48213 arrived broken.")
+    assert "numbers" not in failed(r), r["failures"]
+
+
+# L1: superscript and full-width digits are read as digits
+@pytest.mark.parametrize("reply", ["Your new plan includes ²⁰⁰ GB of storage, refunds in 5 business days [TKT-00001].",
+                                   "Your new plan includes ２００ GB of storage, refunds in 5 business days [TKT-00001]."])
+def test_compatibility_digits_are_read(reply):
+    assert "numbers" in failed(check(reply, EN_SRC))
+
+
+def test_double_charge_is_not_a_multiplier():
+    r = check("We fixed the double charge, refunds take 5 business days [TKT-00001].", EN_SRC)
+    assert "numbers" not in failed(r), r["failures"]
