@@ -19,7 +19,8 @@ _Last updated 12:00. Update this table in the same commit as your work: change t
 | ✅ Done | Locked 80/20 split + leakage check | split.py, check_rules.py | | Uses the main CSV only (22,869 KB / 5,718 holdout). Check prints `OK` |
 | ✅ Done | PII masking (bonus) | pii.py | | Self-check: `python pii.py`. Must become step 1 of the pipeline |
 | ✅ Done | Language detection | sentineldesk/language.py | Hung | ~0.02 ms/ticket, zero deps. Removed German IT loanwords (`account`, `system`, `error`, `access`, `update`, `support`, `customer`, `team`) from `EN_PROFILE` and cut unused `fr`/`es` profiles |
-| 🔨 In progress | Hybrid retrieval (BM25 + dense + RRF) | retrieve.py | | Draft works locally, **not pushed yet**. Embedding model chosen: multilingual-e5-base |
+| ✅ Done | RAG plan + locked `search()` interface | README.md ([RAG plan](#rag-plan)) | Chirag | **Approved by the team.** Model: multilingual-e5-base, σ ≈ 0.87 to start. Code against `search()` now |
+| 🔨 In progress | Hybrid retrieval (BM25 + dense + RRF) | retrieve.py | Chirag | Building to the approved plan; **not pushed yet**. Tag numbers being gathered for the tags-in-text experiment |
 | ⬜ To do | Triage: critical detector → TF-IDF model → neighbour votes → ensemble + calibration | | | Biggest chunk (~2–2.5h). Fallback at 3:30: drop the ensemble |
 | ⬜ To do | Escalation gate (rules + reason strings) | | | Needs triage + retrieval outputs |
 | ⬜ To do | Draft (Gemini, JSON output) + verify step | | **unassigned** | Blocked on choosing the LLM. Can start now with mocked retrieval results |
