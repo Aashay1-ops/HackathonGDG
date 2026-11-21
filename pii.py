@@ -45,9 +45,11 @@ def mask(text):
 
 # Data audit #8: 12.4% of answers use [Name] / {tel_num} / [Telefonnummer] instead of <name> / <tel_num>.
 # Run on retrieved answers before the drafting LLM, so the verify step only has to allow <...> placeholders.
-_BRACKET = re.compile(r"[\[{]\s*([A-Za-zÄÖÜäöüß _-]{2,30}?)\s*[\]}]")
+_BRACKET = re.compile(r"[\[{]\s*([A-Za-zÄÖÜäöüß _.'’-]{2,30}?)\s*[\]}]")
+# [Your Name] / [Ihr Name] / [Dein Name] are left alone on purpose: in answers they are usually the
+# AGENT's sign-off slot, and mapping them to <name> would make the LLM address the customer by it.
 _CANON = {
-    "<name>": {"name", "yourname", "ihrname", "deinname", "customername", "customer", "kundenname"},
+    "<name>": {"name", "customername", "customersname", "customer", "kundenname"},
     "<tel_num>": {"telnum", "telnumber", "telnummer", "telefonnummer", "phonenumber", "phone"},
     "<acc_num>": {"accnum", "accountnumber", "accountnummer", "kontonummer", "kontonr", "kundennummer", "accountno"},
     "<email>": {"email", "emailaddress", "emailadresse"},
@@ -56,17 +58,23 @@ _LOOKUP = {k: tag for tag, keys in _CANON.items() for k in keys}
 
 
 def normalize_placeholders(text):
-    """[Name], {tel_num}, [Telefonnummer], ... -> <name>, <tel_num>, <acc_num>. Unknown brackets are kept."""
+    """[Name], {tel_num}, [Telefonnummer], ... -> <name>, <tel_num>, <acc_num>. Unknown brackets are kept.
+    Non-strings (None, NaN from pandas) return ""."""
+    if not isinstance(text, str):
+        return ""
+
     def sub(m):
-        return _LOOKUP.get(re.sub(r"[\s_-]", "", m.group(1)).lower(), m.group(0))
-    return _BRACKET.sub(sub, text or "")
+        return _LOOKUP.get(re.sub(r"[\s_.'’-]", "", m.group(1)).lower(), m.group(0))
+    return _BRACKET.sub(sub, text)
 
 
 if __name__ == "__main__":
     for src, want in {
         "Dear [Name], call [Tel-Nummer] or {tel_num}.": "Dear <name>, call <tel_num> or <tel_num>.",
-        "Sehr geehrte/r [Ihr Name], Konto [Kontonummer]": "Sehr geehrte/r <name>, Konto <acc_num>",
-        "See [Phone Number] and [Acc_Num]": "See <tel_num> and <acc_num>",
+        "Hallo [Name], Konto [Kontonummer], Grüße [Ihr Name]": "Hallo <name>, Konto <acc_num>, Grüße [Ihr Name]",
+        "See [Phone Number] and [Acc_Num], [Konto-Nr.] [Customer's Name] [Tel.Nummer]":
+            "See <tel_num> and <acc_num>, <acc_num> <name> <tel_num>",
+        "Best regards, [Your Name]": "Best regards, [Your Name]",
         "Step [1] of the guide [Settings > Users]": "Step [1] of the guide [Settings > Users]",
         "Already <name> and <tel_num>": "Already <name> and <tel_num>",
     }.items():
