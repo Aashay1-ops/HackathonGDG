@@ -241,6 +241,42 @@ These are estimates. Save embeddings and models to Google Drive so a disconnect 
 
 **Handoff to the LLM:** `[{ticket_id, similarity, language, type, queue, answer}]`, top 5.
 
+### 🔒 Locked interface: `search()`
+
+This is the one function everyone calls to use retrieval. Code against it now, with fake results if retrieval isn't ready yet.
+
+```python
+search(text, k=5, preds=None, lang=None, exclude_ids=None, pool_ids=None)
+  -> [{"ticket_id", "similarity", "language", "type", "queue", "priority", "subject", "answer"}, ...]  # best first
+```
+
+| Input | Meaning | Who passes it |
+|---|---|---|
+| `text` | New ticket: `subject + "\n" + body`, already PII-masked | everyone |
+| `k` | Number of past tickets to return | 5 for RAG, 10 for neighbour votes |
+| `preds` | Classifier probabilities, e.g. `{"type": {"Incident": 0.91, ...}, "queue": {...}}`. Drives the soft boost | pipeline (after triage); `None` for neighbour votes |
+| `lang` | `en`/`de` from `sentineldesk/language.py`. Drives the same-language boost | pipeline |
+| `exclude_ids` | Ticket IDs never to return (a ticket must not find itself) | ML person, neighbour votes only |
+| `pool_ids` | Search only these tickets (for example the 90% training part during calibration) | ML person, neighbour votes only |
+
+- **`similarity`** is the dense cosine similarity, never the RRF score. The gate escalates "no precedent" when the top result has `similarity < σ` (σ ≈ 0.87 for now).
+- **Neighbour votes** use **dense-only** search (no BM25, no boosts), weighted by `similarity`. Boosting by triage predictions would be circular.
+- **Live demo:** nobody passes `exclude_ids` or `pool_ids`.
+
+### Shared embeddings file (built by the ML person on Colab)
+
+Retrieval and the classifier share one file. Build it with **exactly** these settings, or live queries silently stop matching the index:
+
+- **Model:** `intfloat/multilingual-e5-base`
+- **Text:** the `text` column from `split.py` (`subject + "\n" + body`, missing subject → empty)
+- **Prefix:** `"query: "` before every text, past tickets included
+- **Encode with** `normalize_embeddings=True`, saved as float32
+- **Tickets:** all 22,869 from the 80% split (`load_split()[0]`), in that row order
+- **Outputs, in `data/index/`** (gitignored; share them through Drive):
+  - `emb.npy`: shape `(22869, 768)`
+  - `kb.pkl`: same row order, with `ticket_id, text, subject, answer, language, type, queue, priority, tag_1..tag_8`, plus `searchable` (False for empty, placeholder-only or under-40-character answers)
+- **Run `python check_rules.py` after building.** It verifies the index holds only 80%-split tickets.
+
 ## Required deliverables (from the problem statement)
 
 - [ ] **Triage:** predict type, queue and priority, each with a confidence score
