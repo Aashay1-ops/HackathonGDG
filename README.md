@@ -10,7 +10,7 @@ SentinelDesk takes an incoming support ticket (English or German) and:
 
 ## Status board
 
-_Last updated 12:00. Update this table in the same commit as your work: change the status, add your name. Run `python check_rules.py` before every push._
+_Last updated 14:15. Update this table in the same commit as your work: change the status, add your name. Run `python check_rules.py` before every push._
 
 | Status | Piece | File | Owner | Notes |
 |---|---|---|---|---|
@@ -24,8 +24,9 @@ _Last updated 12:00. Update this table in the same commit as your work: change t
 | 🔨 In progress | Hybrid retrieval (BM25 + dense + RRF) | retrieve.py | Chirag | Building to the approved plan; **not pushed yet**. Tag numbers being gathered for the tags-in-text experiment |
 | ✅ Done | Triage: critical detector → TF-IDF model → neighbour votes → ensemble + calibration | sentineldesk/triage/, scripts/*_triage.py | SPGOHIL09 | `Triage.load("artifacts").predict(subject, body)`; see sentineldesk/triage/README.md. Trains on Colab via notebooks/triage_colab.ipynb (~10 min on T4), which also builds the shared `data/index/` (e5-base). Falls back to model 0 + critical detector if ensemble files are missing |
 | ⬜ To do | Escalation gate (rules + reason strings) | | | Needs triage + retrieval outputs |
-| ⬜ To do | Draft (Gemini, JSON output) + verify step | | **unassigned** | Blocked on choosing the LLM. Can start now with mocked retrieval results |
-| ⬜ To do | Live console UI | | **unassigned** | Blocked on choosing the UI framework. Can start now with mocked outputs |
+| ⬜ To do | Draft (step ④: LLM writes the reply from retrieved answers, JSON output) | | **unassigned** | Blocked on choosing the LLM. Call `pii.normalize_placeholders()` on retrieved answers first |
+| 🔨 In progress | Verify (step ⑤: rule checks on every LLM draft; fails → escalate) | | Aashay | PR #5 open, not merged yet |
+| 🔨 In progress | Live console UI | | Sudeep | |
 | 🔨 Ready, not run | Eval script: Macro-F1 + high-priority Incident recall, "ML only" vs "ML + rules", latency | scripts/eval_triage.py | SPGOHIL09 | Triage part written and tested on a sample. Run on the holdout **once**, at the end |
 | ✅ Done | requirements.txt | requirements.txt | SPGOHIL09 | scikit-learn pinned to 1.7.2 (models are pickled on Colab, loaded on the laptop) |
 | ⬜ To do | Demo script + rehearsal | | | Last hour |
