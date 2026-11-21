@@ -68,25 +68,36 @@ def main() -> None:
         print(f"kb: {E.shape} in {time.perf_counter() - t0:.1f}s")
 
         # Data audit #3/#4: redraw halves A/B by whole paraphrase family (needs these embeddings, so it
-        # happens here, not in build_split.py) and overwrite the random calibration parts.
-        thr = cfg["calibration"].get("family_threshold", 0.98)
-        family, top1, nn1 = paraphrase_families(E, thr)
-        sizes = np.bincount(family)
-        print(f"paraphrase families @ cosine>={thr}: {len(sizes)} families, largest {sizes.max()}, "
-              f"{(sizes[family] > 1).mean():.1%} of KB tickets have a reworded copy")
-        if sizes.max() > 0.02 * len(kb):
-            raise SystemExit(f"Largest family has {sizes.max()} tickets (>2% of KB): {thr} is too low for "
-                             f"{model}; raise calibration.family_threshold in configs/triage.yaml")
-        for lo, hi in ((0.99, 1.01), (thr, 0.99), (0.95, thr), (-1, 0.95)):  # label agreement with nearest KB ticket
-            m = (top1 >= lo) & (top1 < hi)
-            if m.any():
-                agree = {t: f"{(kb[t].to_numpy()[m] == kb[t].to_numpy()[nn1[m]]).mean():.1%}" for t in TASKS}
-                print(f"  nearest-KB cosine [{lo:.2f}, {min(hi, 1):.2f}): {m.sum()} tickets, same labels {agree}")
-        fam_parts = dict(zip(PARTS, family_calib_split(kb, family)))
-        for part, df in fam_parts.items():
-            df[[c for c in TRAIN_COLS if c in df.columns]].to_parquet(root / "splits" / f"{part}.parquet", index=False)
-        part_ids = {k: v["ticket_id"].tolist() for k, v in fam_parts.items()}
-        print("family-aware calibration parts: " + ", ".join(f"{k}={len(v)}" for k, v in part_ids.items()))
+        # happens here, not in build_split.py) and overwrite the random calibration parts. Only for the
+        # team model: embedding another model for comparison must not change the team's split.
+        # ponytail: --sample runs keep the random split (smoke test only); run build_split.py BEFORE this.
+        if model == team_model:
+            thr = cfg["calibration"].get("family_threshold", 0.98)
+            family, top1, nn1 = paraphrase_families(E, thr)
+            sizes = np.bincount(family)
+            print(f"paraphrase families @ cosine>={thr}: {len(sizes)} families, largest {sizes.max()}, "
+                  f"{(sizes[family] > 1).mean():.1%} of KB tickets have a reworded copy")
+            band_queue = None
+            for lo, hi in ((0.99, 1.01), (thr, 0.99), (0.95, thr), (-1, 0.95)):  # labels vs nearest KB ticket
+                m = (top1 >= lo) & (top1 < hi)
+                if m.any():
+                    agree = {t: (kb[t].to_numpy()[m] == kb[t].to_numpy()[nn1[m]]).mean() for t in TASKS}
+                    band_queue = agree["queue"] if lo == thr else band_queue
+                    print(f"  nearest-KB cosine [{lo:.2f}, {min(hi, 1):.2f}): {m.sum()} tickets, same labels "
+                          + ", ".join(f"{t} {v:.1%}" for t, v in agree.items()))
+            # A real reworded copy shares its labels ~97-100% of the time (e5-base measured 96.9% queue in
+            # [0.98, 0.99)); related-but-different tickets only ~63%. Below 95%, families are too broad.
+            if sizes.max() > 0.02 * len(kb) or (band_queue is not None and band_queue < 0.95):
+                raise SystemExit(f"family_threshold {thr} is too low for {model} (largest family {sizes.max()}, "
+                                 f"queue agreement just above it {band_queue}); raise it in configs/triage.yaml")
+            fam_parts = dict(zip(PARTS, family_calib_split(kb, family)))
+            for part, df in fam_parts.items():
+                df[[c for c in TRAIN_COLS if c in df.columns]].to_parquet(root / "splits" / f"{part}.parquet",
+                                                                           index=False)
+            part_ids = {k: v["ticket_id"].tolist() for k, v in fam_parts.items()}
+            (root / "splits" / "sizes.json").write_text(json.dumps(
+                {**{k: len(v) for k, v in part_ids.items()}, "test": len(test_ids), "family_threshold": thr}, indent=2))
+            print("family-aware calibration parts: " + ", ".join(f"{k}={len(v)}" for k, v in part_ids.items()))
 
         row = {tid: i for i, tid in enumerate(kb["ticket_id"])}
         for part in PARTS:

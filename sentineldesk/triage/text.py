@@ -17,7 +17,8 @@ _BR = re.compile(r"(?i)<br\s*/?>")
 def _clean(x) -> str:
     if x is None or (isinstance(x, float) and math.isnan(x)):
         return ""
-    return _BR.sub("\n", str(x))  # same <br> fix as split.py, so live text == training text
+    # same fix, same order as split.py (literal backslash-n, then <br>), so live text == training text
+    return _BR.sub("\n", str(x).replace("\\n", "\n"))
 
 
 def normalize(text: str) -> str:

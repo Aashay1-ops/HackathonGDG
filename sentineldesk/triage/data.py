@@ -127,7 +127,7 @@ def paraphrase_families(emb, threshold: float = 0.98, chunk: int = 2048):
 
 
 def family_calib_split(kb: pd.DataFrame, family) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Like calib_split (90/5/5, seed 42), but whole paraphrase families stay on one side, so
+    """Like calib_split (~90/5/5 of tickets: the 10%/50% cuts are of families, seed 42), but whole families stay on one side, so
     calibration, ensemble weights and the critical threshold are tuned on tickets that have no
     reworded copy in train (data audit #3; also fixes #4, because neighbour votes search train only)."""
     from sklearn.model_selection import GroupShuffleSplit

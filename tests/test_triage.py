@@ -107,8 +107,9 @@ def test_build_text_raises_on_empty():
         build_text("", "  ")
 
 
-def test_build_text_turns_br_into_newlines():
+def test_build_text_turns_br_and_escaped_newlines_into_newlines():
     assert build_text("Hi<br>there", "line1<BR/>line2<br />end") == "Hi\nthere\nline1\nline2\nend"
+    assert build_text(None, "Team,\\n\\nich melde") == "\nTeam,\n\nich melde"  # literal backslash-n
 
 
 def test_family_calib_split_keeps_families_together():
