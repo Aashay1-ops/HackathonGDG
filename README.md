@@ -82,6 +82,17 @@ Steps ①–③ are decided. Everything else is still open (see [Open decisions]
       (details TBD)            (details TBD)
 ```
 
+## Models (decided)
+
+Only decisions the team has agreed on. The drafting LLM is still open (see [Open decisions](#open-decisions)).
+
+| Part | Model | Notes |
+|---|---|---|
+| Embeddings (retrieval, classifier features, neighbour votes, burst detection) | `intfloat/multilingual-e5-base` | One model for everything. Switching means re-embedding the index, retraining the classifier and re-picking σ |
+| Keyword search | BM25 (no model) | Fitted on the 80% split only |
+| Triage | Ensemble: LogReg on e5-base embeddings + TF-IDF LogReg + neighbour votes, calibrated, plus a critical detector | See [Triage in detail](#triage-in-detail-options-0-1-2-5-6). No LLM in triage |
+| Language detection | `sentineldesk/language.py` (team's own en/de detector) | Never read the dataset's `language` column at inference |
+
 ## Architecture (hybrid)
 
 We use classical ML where results must be measurable, rules where we can't afford to miss something, and the LLM only to write the reply. The LLM's output is then checked before anyone sees it.
