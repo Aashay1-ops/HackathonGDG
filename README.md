@@ -107,6 +107,28 @@ We use classical ML where results must be measurable, rules where we can't affor
 - **Report two sets of metrics:** "ML only" and "ML + rules" (Macro-F1 and high-priority Incident recall). The rules raise recall and may cost some precision, and we show that trade-off on purpose.
 - **Mask PII before any external LLM call** (bonus): emails, phone numbers, IPs and account numbers.
 
+## RAG plan
+
+**Knowledge base:** one entry per past ticket from the 80% split: `ticket_id`, subject + body, answer, language, type, queue, priority, tags. Rows with an empty answer are dropped.
+
+**What we search on:** subject + body. Answers are not searchable, because we match on the customer's problem, not on how an agent phrased the fix.
+
+**Using categories.** A new ticket arrives with no category, only our classifier's prediction (type is right about 87% of the time, queue only about 50%), so:
+- ✅ **Soft boost (default).** After searching, move up past tickets whose type/queue matches the prediction, by an amount scaled by the classifier's confidence. A low-confidence guess barely changes anything.
+- ✅ **Categories go to the LLM.** Each precedent is passed with its queue/type so the LLM can judge how relevant it is.
+- 🧪 **Experiment:** add tags/categories to the past tickets' searchable text (helps keyword search). Keep it only if it measurably helps.
+- ❌ **No hard filter by predicted queue.** It would hide the right match about half the time.
+
+**Pipeline order:** classify, then search (so the boost can use the predictions), then the safety check.
+
+**How we evaluate retrieval:**
+- Self-retrieval: a past ticket searched by its own text must come back first.
+- How often the top 5 share the holdout ticket's type and queue. This is only a sanity check, because the boost inflates it by design.
+- Hand-check about 20 holdout tickets: is the top answer actually useful?
+- Cross-lingual hit rate, and search latency p50/p95.
+
+**Handoff to the LLM:** `[{ticket_id, similarity, language, type, queue, answer}]`, top 5.
+
 ## Required deliverables (from the problem statement)
 
 - [ ] **Triage:** predict type, queue and priority, each with a confidence score
