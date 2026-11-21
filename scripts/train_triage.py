@@ -28,6 +28,12 @@ def main() -> None:
     root = artifacts_dir(cfg, args.artifacts, args.sample)
     model = args.model or cfg["embedding"]["model"]
     edir = root / "embeddings" / model_slug(model)
+    if not (edir / "meta.json").exists():
+        have = sorted(p.name for p in (root / "embeddings").glob("*")) if (root / "embeddings").exists() else []
+        raise SystemExit(f"No embeddings for {model} in {edir}.\n"
+                         f"Run first:  python scripts/embed.py --model {model}"
+                         + (" --sample " + str(args.sample) if args.sample else "")
+                         + f"\nEmbeddings that exist: {have or 'none'}")
     parts = {k: read_part(root / "splits", k) for k in ("train", "half_a", "half_b")}
     embs = {k: load_emb(edir, k, parts[k]) for k in parts}
     test_ids = read_part(root / "splits", "test_inputs")["ticket_id"].tolist()  # ids only, for the leakage assert
